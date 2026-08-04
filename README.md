@@ -7,8 +7,8 @@ search index, groups related work, and gives research agents a read-only MCP int
 It is designed to help an agent compare papers, challenge an idea against prior work,
 and propose falsifiable research directions—not merely summarize PDFs.
 
-It runs as one Python package with SQLite, local files, and Ollama, so paper contents
-and model calls can remain on your machine.
+It runs as one Python package with SQLite and local files. Use Ollama to keep model calls
+on your machine, or bring OpenAI reasoning and embedding models with your own API key.
 
 ## See it in action
 
@@ -71,6 +71,44 @@ papertrail doctor
 `sqlite-vec` is optional. If the active Python build cannot load SQLite extensions,
 PaperTrail reports `python-cosine:fallback` and continues with exact in-process vector
 scoring.
+
+## Use OpenAI models
+
+PaperTrail uses the OpenAI Responses API for evidence extraction and research reasoning,
+and the Embeddings API for batched vectors. Set either or both provider roles to
+`openai`; mixed setups such as local embeddings with OpenAI reasoning are supported.
+
+```bash
+export OPENAI_API_KEY="<your-api-key>"
+export PAPERTRAIL_EMBEDDING_PROVIDER=openai
+export PAPERTRAIL_REASONING_PROVIDER=openai
+export PAPERTRAIL_EMBEDDING_MODEL=text-embedding-3-small
+export PAPERTRAIL_REASONING_MODEL=gpt-5.6
+
+papertrail init
+papertrail doctor
+papertrail add-arxiv 2501.01234
+papertrail enrich
+```
+
+Model IDs are configuration, not a hard-coded allowlist. You can use any model available
+to your account that supports the required endpoint: an embedding model for
+`PAPERTRAIL_EMBEDDING_MODEL`, and a Responses API model with Structured Outputs for
+`PAPERTRAIL_REASONING_MODEL`.
+
+For a mixed local/cloud setup:
+
+```bash
+export PAPERTRAIL_EMBEDDING_PROVIDER=ollama
+export PAPERTRAIL_EMBEDDING_MODEL=embeddinggemma
+export PAPERTRAIL_REASONING_PROVIDER=openai
+export PAPERTRAIL_REASONING_MODEL=gpt-5.6
+```
+
+`OPENAI_BASE_URL` can point to an OpenAI-compatible `/v1` endpoint. Compatibility depends
+on that service implementing batched `/embeddings` and Responses Structured Outputs.
+API keys are read from the environment and are never copied into PaperTrail's profile or
+database.
 
 ### Add your first paper
 
@@ -197,7 +235,7 @@ global novelty from a local corpus.
 
 ## Daily research workflow
 
-One setup command configures local Ollama models, daily incremental `cs.AI` ingestion,
+One setup command configures model providers, daily incremental `cs.AI` ingestion,
 Codex or Claude analysis, the dashboard, and a macOS launchd schedule:
 
 ```bash
@@ -206,11 +244,25 @@ papertrail --home "$HOME/.papertrail" setup
 
 Useful controls include `--daily-at 06:00`, `--lookback-days 3`,
 `--rolling-window-days 365`, `--analyst codex|claude`, `--daily-blogs 1|2|3`, repeated
-`--client codex|claude`, `--embedding-model embeddinggemma`,
-`--reasoning-model qwen2.5:7b`, `--dashboard-port 8765`, and `--no-schedule`.
+`--client codex|claude`, `--embedding-provider ollama|openai`,
+`--reasoning-provider ollama|openai`, model IDs, `--dashboard-port 8765`, and
+`--no-schedule`.
 
 The selected analyst CLI must already be installed and authenticated. Ollama must be
-running with the configured embedding and reasoning models available.
+running when selected. For an environment-only OpenAI key, add `--no-schedule`:
+
+```bash
+papertrail --home "$HOME/.papertrail" setup \
+  --embedding-provider openai \
+  --embedding-model text-embedding-3-small \
+  --reasoning-provider openai \
+  --reasoning-model gpt-5.6 \
+  --no-schedule
+```
+
+For unattended macOS runs, put only the key in a private file such as
+`$HOME/.config/papertrail/openai-key`, run `chmod 600` on it, and pass
+`--openai-api-key-file` to setup. The profile stores the file path, never the key.
 
 Run the configured workflow immediately with:
 

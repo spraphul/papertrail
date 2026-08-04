@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import urllib.error
 import urllib.request
@@ -124,6 +125,183 @@ class OllamaProvider:
         return parsed
 
 
+class OpenAIProvider:
+    """Dependency-free client for the OpenAI Responses and Embeddings APIs."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None,
+        base_url: str = "https://api.openai.com/v1",
+        embedding_model: str = "text-embedding-3-small",
+        reasoning_model: str = "gpt-5.6",
+        timeout: int = 180,
+    ):
+        self.provider_name = "openai"
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self.embedding_model = embedding_model
+        self.reasoning_model = reasoning_model
+        self.timeout = timeout
+
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "PaperTrailLocal/0.6",
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _request(
+        self, path: str, payload: dict[str, Any] | None = None, *, timeout: int | None = None
+    ) -> dict[str, Any]:
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=None if payload is None else json.dumps(payload).encode(),
+            headers=self._headers(),
+            method="GET" if payload is None else "POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout or self.timeout) as response:
+                value = json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            try:
+                detail = json.loads(error.read()).get("error", {}).get("message")
+            except (json.JSONDecodeError, AttributeError):
+                detail = None
+            message = f"OpenAI-compatible API returned HTTP {error.code}"
+            if detail:
+                message += f": {detail}"
+            raise RuntimeError(message) from error
+        except (urllib.error.URLError, TimeoutError) as error:
+            raise RuntimeError(f"OpenAI-compatible API unavailable at {self.base_url}") from error
+        except json.JSONDecodeError as error:
+            raise RuntimeError("OpenAI-compatible API returned invalid JSON") from error
+        if not isinstance(value, dict):
+            raise RuntimeError("OpenAI-compatible API returned a non-object response")
+        return value
+
+    def health(self) -> dict[str, Any]:
+        if self.base_url == "https://api.openai.com/v1" and not self.api_key:
+            return {
+                "available": False,
+                "provider": self.provider_name,
+                "url": self.base_url,
+                "message": "OPENAI_API_KEY is not configured",
+            }
+        try:
+            self._request("/models", timeout=5)
+        except RuntimeError as error:
+            return {
+                "available": False,
+                "provider": self.provider_name,
+                "url": self.base_url,
+                "message": str(error),
+            }
+        return {
+            "available": True,
+            "provider": self.provider_name,
+            "url": self.base_url,
+            "embedding_model": self.embedding_model,
+            "reasoning_model": self.reasoning_model,
+        }
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        value = self._request(
+            "/embeddings",
+            {
+                "model": self.embedding_model,
+                "input": texts,
+                "encoding_format": "float",
+            },
+        )
+        items = value.get("data")
+        if not isinstance(items, list) or len(items) != len(texts):
+            raise RuntimeError("Embedding provider returned an invalid batch")
+        try:
+            ordered = sorted(items, key=lambda item: item["index"])
+            if [item["index"] for item in ordered] != list(range(len(texts))):
+                raise ValueError
+            embeddings = [item["embedding"] for item in ordered]
+        except (KeyError, TypeError, ValueError) as error:
+            raise RuntimeError("Embedding provider returned invalid indexed vectors") from error
+        if not all(
+            isinstance(vector, list) and all(isinstance(number, (int, float)) for number in vector)
+            for vector in embeddings
+        ):
+            raise RuntimeError("Embedding provider returned invalid vectors")
+        return embeddings
+
+    def structured(self, *, system: str, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+        value = self._request(
+            "/responses",
+            {
+                "model": self.reasoning_model,
+                "input": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt},
+                ],
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "name": "papertrail_result",
+                        "schema": _strict_schema(schema),
+                        "strict": True,
+                    }
+                },
+                "store": False,
+            },
+        )
+        if value.get("status") not in {None, "completed"}:
+            raise RuntimeError(f"Reasoning provider returned status {value.get('status')!r}")
+        content = _response_output_text(value)
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError as error:
+            raise RuntimeError("Reasoning provider returned invalid JSON") from error
+        if not isinstance(parsed, dict):
+            raise RuntimeError("Reasoning provider returned a non-object result")
+        return parsed
+
+
+def _strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Return an OpenAI strict-schema copy without mutating shared schemas."""
+    normalized = copy.deepcopy(schema)
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "object":
+                value["additionalProperties"] = False
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(normalized)
+    return normalized
+
+
+def _response_output_text(value: dict[str, Any]) -> str:
+    direct = value.get("output_text")
+    if isinstance(direct, str):
+        return direct
+    for item in value.get("output", []):
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for part in item.get("content", []):
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "refusal":
+                raise RuntimeError(f"Reasoning provider refused the request: {part.get('refusal', '')}")
+            if part.get("type") == "output_text" and isinstance(part.get("text"), str):
+                return part["text"]
+    raise RuntimeError("Reasoning provider returned no structured content")
+
+
 def _provider(settings: Any, name: str) -> IntelligenceProvider:
     if name == "ollama":
         return OllamaProvider(
@@ -131,7 +309,14 @@ def _provider(settings: Any, name: str) -> IntelligenceProvider:
             embedding_model=settings.embedding_model,
             reasoning_model=settings.reasoning_model,
         )
-    raise ValueError(f"Unknown PaperTrail provider {name!r}; use 'ollama'")
+    if name == "openai":
+        return OpenAIProvider(
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+            embedding_model=settings.embedding_model,
+            reasoning_model=settings.reasoning_model,
+        )
+    raise ValueError(f"Unknown PaperTrail provider {name!r}; use 'ollama' or 'openai'")
 
 
 def provider_from_settings(settings: Any) -> IntelligenceProvider:

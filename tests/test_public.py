@@ -9,10 +9,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from papertrail.cli import main, parser
-from papertrail.config import Settings
+from papertrail.config import Settings, settings
 from papertrail.intelligence import ResearchIntelligence
 from papertrail.organization import organize_snapshot
 from papertrail.profile import configure_runtime, load_profile, save_profile
+from papertrail.providers import OpenAIProvider
 from papertrail.service import PaperTrail
 
 
@@ -145,6 +146,134 @@ class PublicPaperTrailTests(unittest.TestCase):
         self.assertEqual(configured["providers"]["reasoning_provider"], "ollama")
         self.assertEqual(configured["daily"]["category"], "cs.AI")
         self.assertIn('"profile": "local"', output.getvalue())
+
+    def test_openai_embeddings_are_batched_and_ordered_by_index(self) -> None:
+        provider = OpenAIProvider(
+            api_key="test-secret",
+            base_url="https://models.example.test/v1",
+            embedding_model="my-embedding-model",
+            reasoning_model="my-reasoning-model",
+        )
+        response = {
+            "data": [
+                {"index": 1, "embedding": [0.3, 0.4]},
+                {"index": 0, "embedding": [0.1, 0.2]},
+            ]
+        }
+        with patch.object(provider, "_request", return_value=response) as request:
+            vectors = provider.embed(["first paper", "second paper"])
+        self.assertEqual(vectors, [[0.1, 0.2], [0.3, 0.4]])
+        path, payload = request.call_args.args
+        self.assertEqual(path, "/embeddings")
+        self.assertEqual(payload["input"], ["first paper", "second paper"])
+        self.assertEqual(payload["model"], "my-embedding-model")
+
+    def test_openai_reasoning_uses_responses_structured_outputs(self) -> None:
+        provider = OpenAIProvider(
+            api_key="test-secret",
+            reasoning_model="bring-your-own-model",
+        )
+        response = {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": '{"records": []}'}],
+                }
+            ],
+        }
+        schema = {
+            "type": "object",
+            "properties": {
+                "records": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"claim": {"type": "string"}},
+                        "required": ["claim"],
+                    },
+                }
+            },
+            "required": ["records"],
+        }
+        with patch.object(provider, "_request", return_value=response) as request:
+            result = provider.structured(system="Extract evidence", prompt="Paper", schema=schema)
+        self.assertEqual(result, {"records": []})
+        path, payload = request.call_args.args
+        self.assertEqual(path, "/responses")
+        self.assertEqual(payload["model"], "bring-your-own-model")
+        self.assertEqual([item["role"] for item in payload["input"]], ["system", "user"])
+        self.assertFalse(payload["store"])
+        strict = payload["text"]["format"]
+        self.assertTrue(strict["strict"])
+        self.assertFalse(strict["schema"]["additionalProperties"])
+        self.assertFalse(
+            strict["schema"]["properties"]["records"]["items"]["additionalProperties"]
+        )
+        self.assertNotIn("additionalProperties", schema)
+
+    def test_openai_key_file_is_loaded_without_entering_profile(self) -> None:
+        key_file = self.home / "openai-key"
+        key_file.write_text("test-secret\n")
+        save_profile(
+            self.home,
+            {
+                "profile": "local",
+                "providers": {
+                    "embedding_provider": "openai",
+                    "reasoning_provider": "openai",
+                    "embedding_model": "arbitrary-embedding-model",
+                    "reasoning_model": "arbitrary-reasoning-model",
+                    "openai_base_url": "https://api.openai.com/v1",
+                    "openai_api_key_file": str(key_file),
+                },
+            },
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            configure_runtime(self.home)
+            configured = settings(self.home)
+        self.assertEqual(configured.openai_api_key, "test-secret")
+        self.assertEqual(configured.embedding_model, "arbitrary-embedding-model")
+        self.assertNotIn("test-secret", (self.home / "profile.json").read_text())
+
+    def test_openai_health_never_returns_the_api_key(self) -> None:
+        provider = OpenAIProvider(api_key="test-secret")
+        with patch.object(provider, "_request", return_value={"data": []}):
+            result = provider.health()
+        self.assertTrue(result["available"])
+        self.assertNotIn("test-secret", json.dumps(result))
+
+    def test_setup_accepts_arbitrary_openai_models_without_storing_key(self) -> None:
+        output = StringIO()
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": "test-secret"}, clear=True),
+            patch("papertrail.cli.connect_agent", return_value={"status": "connected"}),
+            patch("papertrail.cli.shutil.which", return_value="/usr/local/bin/codex"),
+            patch("sys.stdout", output),
+        ):
+            main(
+                [
+                    "--home",
+                    str(self.home),
+                    "setup",
+                    "--embedding-provider",
+                    "openai",
+                    "--embedding-model",
+                    "account-embedding-model",
+                    "--reasoning-provider",
+                    "openai",
+                    "--reasoning-model",
+                    "account-reasoning-model",
+                    "--no-schedule",
+                    "--no-dashboard",
+                ]
+            )
+        configured_text = (self.home / "profile.json").read_text()
+        configured = json.loads(configured_text)
+        self.assertEqual(
+            configured["providers"]["reasoning_model"], "account-reasoning-model"
+        )
+        self.assertNotIn("test-secret", configured_text)
 
     def test_corpus_ingest_requires_an_explicit_bound(self) -> None:
         arguments = parser().parse_args(

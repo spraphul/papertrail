@@ -12,6 +12,8 @@ class Settings:
     embedding_provider: str = "ollama"
     reasoning_provider: str = "ollama"
     ollama_url: str = "http://127.0.0.1:11434"
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_api_key: str | None = None
     embedding_model: str = "embeddinggemma"
     reasoning_model: str = "qwen2.5:7b"
 
@@ -39,6 +41,25 @@ def settings(home: str | Path | None = None) -> Settings:
         embedding_provider=embedding_provider,
         reasoning_provider=reasoning_provider,
         ollama_url=os.environ.get("PAPERTRAIL_OLLAMA_URL", "http://127.0.0.1:11434"),
+        openai_base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        openai_api_key=_openai_api_key(),
         embedding_model=os.environ.get("PAPERTRAIL_EMBEDDING_MODEL", "embeddinggemma"),
         reasoning_model=os.environ.get("PAPERTRAIL_REASONING_MODEL", "qwen2.5:7b"),
     )
+
+
+def _openai_api_key() -> str | None:
+    value = os.environ.get("OPENAI_API_KEY")
+    if value:
+        return value
+    key_file = os.environ.get("PAPERTRAIL_OPENAI_API_KEY_FILE")
+    if not key_file:
+        return None
+    path = Path(key_file).expanduser()
+    try:
+        value = path.read_text().strip()
+    except OSError as error:
+        raise RuntimeError(f"Could not read OpenAI API key file: {path}") from error
+    if not value:
+        raise RuntimeError(f"OpenAI API key file is empty: {path}")
+    return value

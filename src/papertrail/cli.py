@@ -33,8 +33,24 @@ def _add_daily_setup_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--lookback-days", type=int, default=3)
     command.add_argument("--rolling-window-days", type=int, default=365)
     command.add_argument("--workers", type=int, default=3)
-    command.add_argument("--embedding-model", default="embeddinggemma")
-    command.add_argument("--reasoning-model", default="qwen2.5:7b")
+    command.add_argument(
+        "--embedding-provider", choices=("ollama", "openai"), default="ollama"
+    )
+    command.add_argument(
+        "--reasoning-provider", choices=("ollama", "openai"), default="ollama"
+    )
+    command.add_argument("--embedding-model")
+    command.add_argument("--reasoning-model")
+    command.add_argument(
+        "--openai-base-url",
+        default=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        help="OpenAI API or compatible /v1 base URL",
+    )
+    command.add_argument(
+        "--openai-api-key-file",
+        type=Path,
+        help="path to a private API-key file for MCP, dashboard, or scheduled runs",
+    )
     command.add_argument("--client", choices=("codex", "claude"), action="append")
     command.add_argument(
         "--analyst",
@@ -63,7 +79,7 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("doctor", help="check local capabilities")
 
     setup = commands.add_parser(
-        "setup", help="configure Ollama, daily sync, dashboard, and research clients"
+        "setup", help="configure model providers, daily sync, dashboard, and research clients"
     )
     _add_daily_setup_arguments(setup)
 
@@ -462,13 +478,45 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
     if not 0.0 < arguments.cluster_threshold < 1.0:
         raise ValueError("cluster-threshold must be between 0 and 1")
 
+    embedding_model = arguments.embedding_model or (
+        "text-embedding-3-small"
+        if arguments.embedding_provider == "openai"
+        else "embeddinggemma"
+    )
+    reasoning_model = arguments.reasoning_model or (
+        "gpt-5.6" if arguments.reasoning_provider == "openai" else "qwen2.5:7b"
+    )
+    uses_openai = "openai" in {
+        arguments.embedding_provider,
+        arguments.reasoning_provider,
+    }
+    openai_key_file = None
+    if arguments.openai_api_key_file:
+        key_path = arguments.openai_api_key_file.expanduser().resolve()
+        if not key_path.is_file() or not key_path.read_text().strip():
+            raise ValueError("--openai-api-key-file must point to a non-empty file")
+        openai_key_file = str(key_path)
+    official_openai = arguments.openai_base_url.rstrip("/") == "https://api.openai.com/v1"
+    if uses_openai and official_openai and not (os.environ.get("OPENAI_API_KEY") or openai_key_file):
+        raise RuntimeError(
+            "OpenAI requires OPENAI_API_KEY or --openai-api-key-file; PaperTrail never "
+            "stores the key itself in profile.json"
+        )
+    if uses_openai and not arguments.no_schedule and not openai_key_file:
+        raise RuntimeError(
+            "Scheduled OpenAI runs require --openai-api-key-file because launchd does not "
+            "load shell environment variables; use --no-schedule for environment-only use"
+        )
+
     profile = {
         "profile": "local",
         "providers": {
-            "embedding_provider": "ollama",
-            "reasoning_provider": "ollama",
-            "embedding_model": arguments.embedding_model,
-            "reasoning_model": arguments.reasoning_model,
+            "embedding_provider": arguments.embedding_provider,
+            "reasoning_provider": arguments.reasoning_provider,
+            "embedding_model": embedding_model,
+            "reasoning_model": reasoning_model,
+            "openai_base_url": arguments.openai_base_url.rstrip("/"),
+            "openai_api_key_file": openai_key_file,
         },
         "daily": {
             "category": arguments.category,
@@ -518,10 +566,12 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
         "home": str(configured_service.settings.home),
         "profile_file": str(profile_path),
         "providers": {
-            "embedding": "ollama",
-            "reasoning": "ollama",
-            "embedding_model": arguments.embedding_model,
-            "reasoning_model": arguments.reasoning_model,
+            "embedding": arguments.embedding_provider,
+            "reasoning": arguments.reasoning_provider,
+            "embedding_model": embedding_model,
+            "reasoning_model": reasoning_model,
+            "openai_base_url": arguments.openai_base_url.rstrip("/") if uses_openai else None,
+            "credential": "key-file" if openai_key_file else "environment",
         },
         "daily": profile["daily"],
         "schedule": schedule,

@@ -22,7 +22,7 @@ def save_profile(home: Path, value: dict[str, Any]) -> Path:
 
 
 def configure_runtime(home: Path) -> dict[str, Any]:
-    """Load a saved local-model profile into the current process."""
+    """Load a saved provider profile into the current process."""
     profile = load_profile(home)
     providers = profile.get("providers", {})
     mapping = {
@@ -30,6 +30,8 @@ def configure_runtime(home: Path) -> dict[str, Any]:
         "reasoning_provider": "PAPERTRAIL_REASONING_PROVIDER",
         "embedding_model": "PAPERTRAIL_EMBEDDING_MODEL",
         "reasoning_model": "PAPERTRAIL_REASONING_MODEL",
+        "openai_base_url": "OPENAI_BASE_URL",
+        "openai_api_key_file": "PAPERTRAIL_OPENAI_API_KEY_FILE",
     }
     for key, environment_name in mapping.items():
         value = providers.get(key)
