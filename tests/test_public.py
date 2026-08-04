@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import http.client
 import os
 import re
 import tempfile
+import threading
 import unittest
+from http.server import ThreadingHTTPServer
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
 from papertrail.cli import main, parser
+from papertrail.api import PaperTrailHandler
 from papertrail.config import Settings, settings
 from papertrail.intelligence import ResearchIntelligence
 from papertrail.organization import organize_snapshot
@@ -150,6 +154,62 @@ class PublicPaperTrailTests(unittest.TestCase):
         )
         result = self.service.search("recovery", snapshot_id=snapshot["snapshot_id"])
         self.assertEqual({item["paper_id"] for item in result["results"]}, {first["paper_id"]})
+
+    def test_favourites_persist_and_are_exposed_by_local_api(self) -> None:
+        paper_id = self.ingest()["paper_id"]
+        handler = type("TestPaperTrailHandler", (PaperTrailHandler,), {"service": self.service})
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        try:
+            connection.request(
+                "POST",
+                f"/v1/favorites/{paper_id}",
+                body=json.dumps({"favorite": True}),
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertTrue(json.loads(response.read())["favorite"])
+
+            connection.request("GET", "/v1/favorites")
+            response = connection.getresponse()
+            library = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertEqual(library["count"], 1)
+            self.assertEqual(library["favorites"][0]["paper_id"], paper_id)
+            self.assertTrue(self.service.get_paper(paper_id)["results"][0]["favorite"])
+
+            connection.request(
+                "POST",
+                f"/v1/favorites/{paper_id}",
+                body=json.dumps({"favorite": False}),
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": "https://malicious.example",
+                },
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, 403)
+            response.read()
+            self.assertEqual(self.service.list_favorites()["count"], 1)
+
+            connection.request(
+                "POST",
+                f"/v1/favorites/{paper_id}",
+                body=json.dumps({"favorite": False}),
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            response.read()
+            self.assertEqual(self.service.list_favorites()["count"], 0)
+        finally:
+            connection.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_local_intelligence_embeds_and_hybrid_searches(self) -> None:
         self.ingest()

@@ -17,7 +17,7 @@ from .intelligence import ResearchIntelligence
 class PaperTrailHandler(BaseHTTPRequestHandler):
     service: PaperTrail
     intelligence: ResearchIntelligence | None = None
-    server_version = "PaperTrail/0.5"
+    server_version = "PaperTrail/0.8"
 
     def _json(self, status: int, value: Any) -> None:
         body = json.dumps(value, indent=2).encode()
@@ -84,6 +84,9 @@ class PaperTrailHandler(BaseHTTPRequestHandler):
             if parsed.path in {"/", "/index.html"}:
                 self._static("index.html")
                 return
+            if parsed.path == "/favicon.ico":
+                self._bytes(204, b"", "image/x-icon")
+                return
             if parsed.path.startswith("/assets/"):
                 self._static(parsed.path.removeprefix("/assets/"))
                 return
@@ -92,6 +95,9 @@ class PaperTrailHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/v1/dashboard":
                 self._json(200, dashboard_data(self.service))
+                return
+            if parsed.path == "/v1/favorites":
+                self._json(200, self.service.list_favorites())
                 return
             if parsed.path == "/v1/organization/latest":
                 self._json(200, latest_organization(self.service) or {"status": "not_ready"})
@@ -139,7 +145,16 @@ class PaperTrailHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         try:
             body = self._body()
-            if self.path == "/v1/search":
+            parsed = urlparse(self.path)
+            if parsed.path.startswith("/v1/favorites/"):
+                self._require_same_origin_json()
+                favorite = body.get("favorite")
+                if not isinstance(favorite, bool):
+                    raise ValueError("favorite must be a boolean")
+                paper_id = parsed.path.rsplit("/", 1)[-1]
+                self._json(200, self.service.set_favorite(paper_id, favorite))
+                return
+            if parsed.path == "/v1/search":
                 self._json(
                     200,
                     self.service.search(
@@ -149,19 +164,19 @@ class PaperTrailHandler(BaseHTTPRequestHandler):
                     ),
                 )
                 return
-            if self.path == "/v1/evidence":
+            if parsed.path == "/v1/evidence":
                 self._json(200, self.service.get_evidence(body.get("evidence_ids", [])))
                 return
-            if self.path in {"/v1/hybrid-search", "/v1/ideas/novelty-check", "/v1/opportunities/discover"}:
+            if parsed.path in {"/v1/hybrid-search", "/v1/ideas/novelty-check", "/v1/opportunities/discover"}:
                 if self.intelligence is None:
                     raise RuntimeError("Research intelligence provider is not configured")
-                if self.path == "/v1/hybrid-search":
+                if parsed.path == "/v1/hybrid-search":
                     value = self.intelligence.hybrid_search(
                         body.get("query", ""),
                         snapshot_id=body.get("snapshot_id"),
                         limit=int(body.get("limit", 20)),
                     )
-                elif self.path == "/v1/ideas/novelty-check":
+                elif parsed.path == "/v1/ideas/novelty-check":
                     value = self.intelligence.novelty_check(
                         body.get("idea", ""),
                         snapshot_id=body.get("snapshot_id"),
@@ -176,12 +191,23 @@ class PaperTrailHandler(BaseHTTPRequestHandler):
                 self._json(200, value)
                 return
             self._json(404, {"error": "not_found", "message": "Unknown route"})
+        except PermissionError as error:
+            self._json(403, _error(error))
         except (json.JSONDecodeError, ValueError) as error:
             self._json(400, _error(error))
         except KeyError as error:
             self._json(404, _error(error))
         except Exception as error:
             self._json(500, _error(error))
+
+    def _require_same_origin_json(self) -> None:
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().casefold()
+        if content_type != "application/json":
+            raise ValueError("Favourite changes require application/json")
+        origin = self.headers.get("Origin")
+        host = self.headers.get("Host")
+        if origin and (not host or urlparse(origin).netloc != host):
+            raise PermissionError("Cross-origin favourite changes are not allowed")
 
     def log_message(self, format: str, *args: Any) -> None:
         print(f"papertrail-api: {format % args}")

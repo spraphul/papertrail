@@ -177,7 +177,8 @@ def dashboard_data(service: PaperTrail) -> dict[str, Any]:
                     (SELECT count(*) FROM evidence_passages) AS evidence,
                     (SELECT count(*) FROM visual_evidence) AS figures,
                     (SELECT count(*) FROM scientific_records) AS scientific_records,
-                    (SELECT count(*) FROM daily_blogs) AS blogs
+                    (SELECT count(*) FROM daily_blogs) AS blogs,
+                    (SELECT count(*) FROM paper_favorites) AS favorites
                 """
             ).fetchone()
         )

@@ -660,6 +660,11 @@ class PaperTrail:
                 raise KeyError(f"Unknown paper: {paper_id}")
             result = dict(row)
             result["authors"] = json.loads(result.pop("authors_json"))
+            result["favorite"] = bool(
+                db.execute(
+                    "SELECT 1 FROM paper_favorites WHERE paper_id = ?", (paper_id,)
+                ).fetchone()
+            )
             result["sections"] = [
                 dict(item)
                 for item in db.execute(
@@ -685,6 +690,52 @@ class PaperTrail:
             for figure in result["figures"]:
                 figure.pop("nearby_evidence_ids_json")
             return self._response(db, paper_id, snapshot, [result])
+
+    def set_favorite(self, paper_id: str, favorite: bool) -> dict[str, Any]:
+        self.initialize()
+        with transaction(self.settings.database_path) as db:
+            paper = db.execute(
+                "SELECT canonical_title FROM papers WHERE id = ?", (paper_id,)
+            ).fetchone()
+            if not paper:
+                raise KeyError(f"Unknown paper: {paper_id}")
+            if favorite:
+                db.execute(
+                    "INSERT INTO paper_favorites VALUES (?, ?) "
+                    "ON CONFLICT(paper_id) DO NOTHING",
+                    (paper_id, utc_now()),
+                )
+            else:
+                db.execute("DELETE FROM paper_favorites WHERE paper_id = ?", (paper_id,))
+        return {
+            "paper_id": paper_id,
+            "title": paper["canonical_title"],
+            "favorite": favorite,
+        }
+
+    def list_favorites(self) -> dict[str, Any]:
+        self.initialize()
+        with closing(connect(self.settings.database_path)) as db:
+            rows = db.execute(
+                """
+                SELECT p.id AS paper_id, p.canonical_title AS title, p.abstract,
+                       p.authors_json, p.published_date, p.source_url, p.source_class,
+                       f.created_at AS favorited_at,
+                       CASE WHEN v.id IS NULL THEN 0 ELSE 1 END AS artifact_available
+                FROM paper_favorites f
+                JOIN papers p ON p.id = f.paper_id
+                LEFT JOIN paper_versions v ON v.paper_id = p.id AND v.is_current = 1
+                ORDER BY f.created_at DESC, p.canonical_title
+                """
+            ).fetchall()
+        favorites = []
+        for row in rows:
+            item = dict(row)
+            item["authors"] = json.loads(item.pop("authors_json"))
+            item["artifact_available"] = bool(item["artifact_available"])
+            item["favorite"] = True
+            favorites.append(item)
+        return {"favorites": favorites, "count": len(favorites)}
 
     def get_evidence(self, evidence_ids: list[str]) -> dict[str, Any]:
         self.initialize()

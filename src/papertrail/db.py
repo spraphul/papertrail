@@ -193,6 +193,14 @@ CREATE TABLE IF NOT EXISTS daily_blogs (
 
 CREATE INDEX IF NOT EXISTS daily_blogs_created_idx ON daily_blogs(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS paper_favorites (
+    paper_id TEXT PRIMARY KEY REFERENCES papers(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS paper_favorites_created_idx
+ON paper_favorites(created_at DESC);
+
 CREATE TABLE IF NOT EXISTS organization_runs (
     id TEXT PRIMARY KEY,
     run_date TEXT NOT NULL,

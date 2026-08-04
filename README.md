@@ -27,6 +27,10 @@ The dashboard is included with the package and listens on localhost only.
 The deep-dive view links to the canonical public source and opens the indexed PDF in an
 embedded reader. Generated articles can include verified figures from the paper.
 
+Stars in paper lists and deep dives save papers to the dashboard's Favourites view. The
+library is stored in the same local SQLite database, survives restarts and daily runs,
+and remains user-controlled—the read-only MCP server cannot change it.
+
 ## What it does
 
 - Imports one PDF, one arXiv paper, or a date-bounded arXiv corpus.
@@ -37,6 +41,7 @@ embedded reader. Generated articles can include verified figures from the paper.
 - Fuses lexical and semantic retrieval and challenges ideas against nearest prior work.
 - Builds high-recall hybrid candidate neighborhoods, then uses the configured reasoning
   model to remove topical false positives and form precise shared-problem groups.
+- Lets you star papers into a persistent local Favourites library.
 - Exposes fourteen read-only MCP tools plus a `papertrail-deep-research` Agent Skill.
 - Produces daily trends and 1–3 source-linked deep-dive essays when configured with an
   analyst CLI.
