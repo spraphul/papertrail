@@ -60,8 +60,18 @@ def _add_daily_setup_arguments(command: argparse.ArgumentParser) -> None:
     )
     command.add_argument("--analyst-model", help="optional model override for the analyst CLI")
     command.add_argument("--daily-blogs", type=int, choices=(1, 2, 3), default=3)
-    command.add_argument("--max-clusters", type=int, default=48)
-    command.add_argument("--cluster-threshold", type=float, default=0.58)
+    command.add_argument(
+        "--max-clusters",
+        type=int,
+        default=48,
+        help="maximum hybrid candidate neighborhoods before LLM refinement",
+    )
+    command.add_argument(
+        "--cluster-threshold",
+        type=float,
+        default=0.58,
+        help="hybrid candidate similarity threshold before LLM refinement",
+    )
     command.add_argument("--dashboard-port", type=int, default=8765)
     command.add_argument("--scope", choices=("user", "project"), default="user")
     command.add_argument("--no-schedule", action="store_true")
@@ -88,8 +98,18 @@ def parser() -> argparse.ArgumentParser:
         "organize", help="hybrid-cluster snapshot papers by the problems they target"
     )
     organize.add_argument("--snapshot", required=True)
-    organize.add_argument("--max-clusters", type=int, default=48)
-    organize.add_argument("--similarity-threshold", type=float, default=0.58)
+    organize.add_argument(
+        "--max-clusters",
+        type=int,
+        default=48,
+        help="maximum hybrid candidate neighborhoods before LLM refinement",
+    )
+    organize.add_argument(
+        "--similarity-threshold",
+        type=float,
+        default=0.58,
+        help="hybrid candidate similarity threshold before LLM refinement",
+    )
 
     add_pdf = commands.add_parser("add-pdf", help="ingest a local PDF")
     _add_metadata_arguments(add_pdf)

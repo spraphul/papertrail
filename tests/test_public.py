@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import unittest
 from io import StringIO
@@ -51,6 +52,61 @@ class FakeProvider:
         if "candidate" in json.dumps(schema).casefold():
             return {"candidates": []}
         return {"records": []}
+
+
+class ClusteringProvider:
+    provider_name = "fake-llm"
+    embedding_model = "fake-shared-space"
+    reasoning_model = "fake-taxonomist"
+
+    def __init__(self) -> None:
+        self.cluster_dossiers: list[dict] = []
+
+    def health(self) -> dict:
+        return {"available": True, "provider": self.provider_name}
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.5, 0.25] for _ in texts]
+
+    def structured(self, *, system: str, prompt: str, schema: dict) -> dict:
+        if "groups" in schema.get("properties", {}):
+            papers = json.loads(prompt.split("\n\n", 1)[1])["papers"]
+            self.cluster_dossiers = papers
+            agent_ids = [
+                paper["paper_id"] for paper in papers if "Protein" not in paper["title"]
+            ]
+            protein_ids = [paper["paper_id"] for paper in papers if "Protein" in paper["title"]]
+            return {
+                "groups": [
+                    {
+                        "title": "Recovering Tool-Using Agents",
+                        "description": "Agents that recover when external tool interfaces change.",
+                        "shared_problem": "Maintaining agent reliability under tool-interface drift.",
+                        "paper_ids": agent_ids,
+                        "membership_confidence": 0.94,
+                    },
+                    {
+                        "title": "Protein Structure Generation",
+                        "description": "A distinct singleton concerned with protein generation.",
+                        "shared_problem": "Generating stable protein structures.",
+                        "paper_ids": protein_ids,
+                        "membership_confidence": 0.99,
+                    },
+                ]
+            }
+        evidence_ids = re.findall(r"ev_[a-f0-9]+", prompt)
+        return {
+            "records": [
+                {
+                    "title": "Primary contribution",
+                    "statement": "The paper introduces a mechanism tailored to its stated problem.",
+                    "conditions": [],
+                    "numeric_values": [],
+                    "evidence_ids": evidence_ids[:1],
+                    "confidence": 0.9,
+                }
+            ]
+        }
 
 
 class PublicPaperTrailTests(unittest.TestCase):
@@ -304,6 +360,61 @@ class PublicPaperTrailTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "complete")
         self.assertEqual(result["paper_count"], 1)
+
+    def test_llm_clustering_splits_topical_false_positive_with_rich_context(self) -> None:
+        provider = ClusteringProvider()
+        self.service = PaperTrail(
+            Settings(
+                self.home,
+                intelligence_provider=provider.provider_name,
+                embedding_provider=provider.provider_name,
+                reasoning_provider=provider.provider_name,
+                embedding_model=provider.embedding_model,
+                reasoning_model=provider.reasoning_model,
+            )
+        )
+        self.service.initialize()
+        papers = [
+            (
+                "Tool Agent Recovery",
+                "We recover autonomous agents after tool schemas change during deployment.",
+            ),
+            (
+                "Agent Interface Adaptation",
+                "We adapt tool-using agents to renamed arguments and delayed responses.",
+            ),
+            (
+                "Protein Agent Generation",
+                "We use a generative agent to design stable protein structures.",
+            ),
+        ]
+        for index, (title, abstract) in enumerate(papers):
+            self.service.ingest_text(
+                f"Abstract\n{abstract}\nMethod\nA specialized mechanism solves this problem.",
+                title=title,
+                abstract=abstract,
+                published_date=f"2026-07-{20 + index:02d}",
+                source_url=f"https://example.org/paper-{index}",
+            )
+        ResearchIntelligence(self.service, provider).enrich(extraction_types=("contribution",))
+        snapshot = self.service.create_snapshot("llm-organized")
+        result = organize_snapshot(
+            self.service,
+            snapshot["snapshot_id"],
+            max_clusters=2,
+            similarity_threshold=0.5,
+            label_provider=provider,
+        )
+        groups = {group["label"]: group for group in result["groups"]}
+        self.assertEqual(result["cluster_count"], 2)
+        self.assertIn("Recovering Tool-Using Agents", groups, result)
+        self.assertEqual(groups["Recovering Tool-Using Agents"]["paper_count"], 2)
+        self.assertEqual(groups["Protein Structure Generation"]["paper_count"], 1)
+        self.assertEqual(result["configuration"]["llm_refinement"]["calls"], 1)
+        self.assertTrue(all(paper["abstract"] for paper in provider.cluster_dossiers))
+        self.assertTrue(
+            all(paper["scientific_records"] for paper in provider.cluster_dossiers)
+        )
 
 
 if __name__ == "__main__":

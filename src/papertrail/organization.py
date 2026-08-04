@@ -14,8 +14,11 @@ from .providers import IntelligenceProvider
 from .service import PaperTrail, stable_id, utc_now
 
 
-ALGORITHM_VERSION = "hybrid-problem-centroid:v1"
+ALGORITHM_VERSION = "hybrid-llm-problem-taxonomy:v2"
 PROJECTION_DIMENSIONS = 96
+LLM_CLUSTER_BATCH_SIZE = 20
+LLM_ABSTRACT_CHARACTERS = 1400
+LLM_RECORD_CHARACTERS = 300
 STOPWORDS = {
     "about", "after", "also", "among", "based", "been", "before", "being", "between",
     "both", "can", "could", "from", "have", "into", "more", "most", "other", "over",
@@ -34,6 +37,7 @@ class PaperFeature:
     abstract: str
     source_url: str
     published_date: str | None
+    records: dict[str, list[str]]
     tokens: set[str]
     vector: list[float] | None
 
@@ -43,6 +47,10 @@ class Cluster:
     members: list[tuple[PaperFeature, float]] = field(default_factory=list)
     centroid: list[float] | None = None
     tokens: Counter[str] = field(default_factory=Counter)
+    llm_title: str | None = None
+    llm_description: str | None = None
+    llm_shared_problem: str | None = None
+    llm_refined: bool = False
 
     def add(self, paper: PaperFeature, similarity: float) -> None:
         count = len(self.members)
@@ -84,6 +92,7 @@ def organize_snapshot(
         ALGORITHM_VERSION,
         str(max_clusters),
         f"{similarity_threshold:.4f}",
+        _organization_model(label_provider),
     )
     if not features:
         return _persist(
@@ -97,6 +106,7 @@ def organize_snapshot(
             max_clusters,
             similarity_threshold,
             label_provider,
+            {"enabled": label_provider is not None, "calls": 0, "fallback_clusters": 0},
         )
     clusters: list[Cluster] = []
     for paper in features:
@@ -115,6 +125,7 @@ def organize_snapshot(
             created.add(paper, 1.0)
             clusters.append(created)
     clusters = _consolidate_singletons(clusters, floor=max(0.38, similarity_threshold - 0.16))
+    clusters, refinement = _refine_clusters(clusters, label_provider)
     clusters.sort(key=lambda item: (-len(item.members), sorted(x[0].paper_id for x in item.members)))
     return _persist(
         service,
@@ -127,6 +138,7 @@ def organize_snapshot(
         max_clusters,
         similarity_threshold,
         label_provider,
+        refinement,
     )
 
 
@@ -189,17 +201,20 @@ def _paper_features(
             (snapshot_id,),
         ).fetchall()
         version_to_paper = {row["paper_version_id"]: row["paper_id"] for row in papers}
-        record_text: dict[str, list[str]] = {row["paper_id"]: [] for row in papers}
+        records: dict[str, dict[str, list[str]]] = {row["paper_id"]: {} for row in papers}
         for row in db.execute(
             """
-            SELECT sr.paper_id, sr.statement FROM snapshot_records ss
+            SELECT sr.paper_id, sr.record_type, sr.statement FROM snapshot_records ss
             JOIN scientific_records sr ON sr.id = ss.record_id
             WHERE ss.snapshot_id = ? AND sr.record_type IN
-                  ('contribution', 'method', 'assumption', 'limitation')
+                  ('contribution', 'method', 'assumption', 'empirical_result',
+                   'limitation', 'future_work')
             """,
             (snapshot_id,),
         ):
-            record_text.setdefault(row["paper_id"], []).append(row["statement"])
+            records.setdefault(row["paper_id"], {}).setdefault(row["record_type"], []).append(
+                row["statement"]
+            )
         sums: dict[str, list[float]] = {}
         counts: Counter[str] = Counter()
         for row in db.execute(
@@ -222,7 +237,15 @@ def _paper_features(
     for row in papers:
         paper_id = row["paper_id"]
         text = " ".join(
-            [row["canonical_title"], row["abstract"], *record_text.get(paper_id, [])]
+            [
+                row["canonical_title"],
+                row["abstract"],
+                *[
+                    statement
+                    for values in records.get(paper_id, {}).values()
+                    for statement in values
+                ],
+            ]
         )
         vector = None
         if counts[paper_id]:
@@ -234,6 +257,7 @@ def _paper_features(
                 abstract=row["abstract"],
                 source_url=row["source_url"],
                 published_date=row["published_date"],
+                records=records.get(paper_id, {}),
                 tokens=_tokens(text),
                 vector=vector,
             )
@@ -252,6 +276,7 @@ def _persist(
     max_clusters: int,
     similarity_threshold: float,
     label_provider: IntelligenceProvider | None,
+    refinement: dict[str, Any],
 ) -> dict[str, Any]:
     all_members = [paper for cluster in clusters for paper, _ in cluster.members]
     document_frequency: Counter[str] = Counter()
@@ -266,9 +291,14 @@ def _persist(
         prepared.append(
             (ordered, _top_terms(cluster, document_frequency, len(all_members)))
         )
-    generated_labels = _generate_labels(prepared, label_provider)
+    generated_labels = _generate_labels(
+        prepared,
+        label_provider,
+        skip_indexes={index for index, cluster in enumerate(clusters) if cluster.llm_title},
+    )
     now = utc_now()
     saved_groups = []
+    used_labels: set[str] = set()
     with transaction(service.settings.database_path) as db:
         existing_cluster_ids = [
             row[0]
@@ -296,6 +326,7 @@ def _persist(
                         "semantic_weight": 0.78,
                         "lexical_weight": 0.22,
                         "projection_dimensions": PROJECTION_DIMENSIONS,
+                        "llm_refinement": refinement,
                     },
                     sort_keys=True,
                 ),
@@ -311,10 +342,15 @@ def _persist(
             cluster_id = stable_id("cluster", run_id, *member_ids)
             fallback_label = _fallback_label(ordered, ordinal)
             generated = generated_labels.get(ordinal, {})
-            label = generated.get("title", fallback_label)
+            label = cluster.llm_title or generated.get("title", fallback_label)
+            if label.casefold() in used_labels:
+                label = fallback_label
+            if label.casefold() in used_labels:
+                label = f"{label} ({ordinal + 1})"
+            used_labels.add(label.casefold())
             new_count = sum(paper.paper_id in new_ids for paper, _ in ordered)
             average = sum(score for _, score in ordered) / len(ordered)
-            description = generated.get(
+            description = cluster.llm_description or generated.get(
                 "description",
                 f"Research related to {label.casefold()}, represented by {len(ordered)} papers.",
             )
@@ -369,6 +405,7 @@ def _persist(
             "semantic_weight": 0.78,
             "lexical_weight": 0.22,
             "projection_dimensions": PROJECTION_DIMENSIONS,
+            "llm_refinement": refinement,
         },
         "paper_count": len(all_members),
         "semantic_paper_count": sum(paper.vector is not None for paper in all_members),
@@ -405,6 +442,178 @@ def _consolidate_singletons(clusters: list[Cluster], floor: float) -> list[Clust
     return stable + unresolved
 
 
+def _organization_model(provider: IntelligenceProvider | None) -> str:
+    if provider is None:
+        return "none"
+    return f"{provider.provider_name}:{provider.reasoning_model}"
+
+
+def _refine_clusters(
+    clusters: list[Cluster], provider: IntelligenceProvider | None
+) -> tuple[list[Cluster], dict[str, Any]]:
+    stats: dict[str, Any] = {
+        "enabled": provider is not None,
+        "provider": None if provider is None else provider.provider_name,
+        "model": None if provider is None else provider.reasoning_model,
+        "calls": 0,
+        "candidate_clusters": sum(len(cluster.members) > 1 for cluster in clusters),
+        "refined_clusters": 0,
+        "fallback_clusters": 0,
+        "batch_size": LLM_CLUSTER_BATCH_SIZE,
+        "context": ["title", "abstract", "scientific_records"],
+    }
+    if provider is None:
+        return clusters, stats
+    refined: list[Cluster] = []
+    for cluster in clusters:
+        if len(cluster.members) < 2:
+            refined.append(cluster)
+            continue
+        members = sorted(cluster.members, key=lambda item: (item[0].title, item[0].paper_id))
+        batches = [
+            members[index : index + LLM_CLUSTER_BATCH_SIZE]
+            for index in range(0, len(members), LLM_CLUSTER_BATCH_SIZE)
+        ]
+        for batch in batches:
+            stats["calls"] += 1
+            groups = _adjudicate_cluster(batch, provider)
+            if groups is None:
+                stats["fallback_clusters"] += 1
+                fallback = Cluster()
+                for paper, score in batch:
+                    fallback.add(paper, score)
+                refined.append(fallback)
+                continue
+            stats["refined_clusters"] += 1
+            refined.extend(groups)
+    return refined, stats
+
+
+def _adjudicate_cluster(
+    members: list[tuple[PaperFeature, float]], provider: IntelligenceProvider
+) -> list[Cluster] | None:
+    dossiers = [_paper_dossier(paper) for paper, _ in members]
+    schema = {
+        "type": "object",
+        "properties": {
+            "groups": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "description": {"type": "string"},
+                        "shared_problem": {"type": "string"},
+                        "paper_ids": {"type": "array", "items": {"type": "string"}},
+                        "membership_confidence": {"type": "number"},
+                    },
+                    "required": [
+                        "title",
+                        "description",
+                        "shared_problem",
+                        "paper_ids",
+                        "membership_confidence",
+                    ],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["groups"],
+        "additionalProperties": False,
+    }
+    try:
+        output = provider.structured(
+            system=(
+                "You are building a precise scientific problem taxonomy. Group papers only when "
+                "they address the same concrete research problem and their objectives, evaluated "
+                "setting, or technical mechanism are meaningfully compatible. Shared broad topics, "
+                "model families, benchmark words, or generic methods are not enough. Use titles and "
+                "abstracts for scope and typed scientific records for contributions, assumptions, "
+                "results, and limitations. Prefer a singleton over a misleading group."
+            ),
+            prompt=(
+                "Partition every paper below exactly once. Do not invent, omit, or duplicate IDs. "
+                "A group needs a defensible shared problem; put a paper alone when the relationship "
+                "is merely topical or uncertain. Titles must be specific 2-9 word research-problem "
+                "labels. Descriptions must state both the inclusion rule and why the members belong. "
+                "membership_confidence is 0 to 1 for the weakest member in that group.\n\n"
+                + json.dumps({"papers": dossiers}, indent=2)
+            ),
+            schema=schema,
+        )
+    except (RuntimeError, ValueError, OSError):
+        return None
+    raw_groups = output.get("groups")
+    if not isinstance(raw_groups, list) or not raw_groups:
+        return None
+    by_id = {paper.paper_id: paper for paper, _ in members}
+    expected = set(by_id)
+    seen: set[str] = set()
+    prepared: list[tuple[dict[str, Any], list[str]]] = []
+    for item in raw_groups:
+        if not isinstance(item, dict):
+            return None
+        paper_ids = item.get("paper_ids")
+        if (
+            not isinstance(paper_ids, list)
+            or not paper_ids
+            or any(not isinstance(paper_id, str) for paper_id in paper_ids)
+        ):
+            return None
+        if any(paper_id not in expected or paper_id in seen for paper_id in paper_ids):
+            return None
+        seen.update(paper_ids)
+        prepared.append((item, paper_ids))
+    if seen != expected:
+        return None
+    groups = []
+    for item, paper_ids in prepared:
+        title = " ".join(str(item.get("title", "")).split()).strip(" .")
+        description = " ".join(str(item.get("description", "")).split())
+        shared_problem = " ".join(str(item.get("shared_problem", "")).split())
+        confidence = item.get("membership_confidence")
+        if (
+            not 2 <= len(title.split()) <= 10
+            or len(title) > 100
+            or not description
+            or not shared_problem
+            or not isinstance(confidence, (int, float))
+        ):
+            return None
+        score = max(0.0, min(1.0, float(confidence)))
+        group = Cluster(
+            llm_title=title,
+            llm_description=description,
+            llm_shared_problem=shared_problem,
+            llm_refined=True,
+        )
+        for paper_id in paper_ids:
+            group.add(by_id[paper_id], 1.0 if len(paper_ids) == 1 else score)
+        groups.append(group)
+    return groups
+
+
+def _paper_dossier(paper: PaperFeature) -> dict[str, Any]:
+    records = {
+        record_type: [_clip(statement, LLM_RECORD_CHARACTERS) for statement in statements[:2]]
+        for record_type, statements in sorted(paper.records.items())
+        if statements
+    }
+    return {
+        "paper_id": paper.paper_id,
+        "title": paper.title,
+        "abstract": _clip(paper.abstract, LLM_ABSTRACT_CHARACTERS),
+        "scientific_records": records,
+    }
+
+
+def _clip(value: str, limit: int) -> str:
+    compact = " ".join(value.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1].rstrip() + "…"
+
+
 def _top_terms(cluster: Cluster, document_frequency: Counter[str], total: int) -> list[str]:
     scored = []
     for token, frequency in cluster.tokens.items():
@@ -416,11 +625,16 @@ def _top_terms(cluster: Cluster, document_frequency: Counter[str], total: int) -
 def _generate_labels(
     groups: list[tuple[list[tuple[PaperFeature, float]], list[str]]],
     provider: IntelligenceProvider | None,
+    *,
+    skip_indexes: set[int] | None = None,
 ) -> dict[int, dict[str, str]]:
     if provider is None or not groups:
         return {}
     summaries = []
+    skipped = skip_indexes or set()
     for index, (members, terms) in enumerate(groups):
+        if index in skipped:
+            continue
         summaries.append(
             {
                 "cluster_index": index,
@@ -429,6 +643,8 @@ def _generate_labels(
                 "representative_titles": [paper.title for paper, _ in members[:8]],
             }
         )
+    if not summaries:
+        return {}
     schema = {
         "type": "object",
         "properties": {

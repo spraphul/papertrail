@@ -147,7 +147,7 @@ class OpenAIProvider:
     def _headers(self) -> dict[str, str]:
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": "PaperTrailLocal/0.6",
+            "User-Agent": "PaperTrailLocal/0.7",
         }
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"

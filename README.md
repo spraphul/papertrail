@@ -35,7 +35,8 @@ embedded reader. Generated articles can include verified figures from the paper.
   each tied to exact evidence IDs.
 - Captures figure captions and immutable page renders for visual inspection.
 - Fuses lexical and semantic retrieval and challenges ideas against nearest prior work.
-- Organizes papers into hybrid semantic research neighborhoods.
+- Builds high-recall hybrid candidate neighborhoods, then uses the configured reasoning
+  model to remove topical false positives and form precise shared-problem groups.
 - Exposes fourteen read-only MCP tools plus a `papertrail-deep-research` Agent Skill.
 - Produces daily trends and 1–3 source-linked deep-dive essays when configured with an
   analyst CLI.
@@ -270,6 +271,22 @@ Run the configured workflow immediately with:
 papertrail --home "$HOME/.papertrail" daily
 ```
 
+### How research neighborhoods are formed
+
+Clustering is deliberately hierarchical:
+
+1. Embedding and lexical similarity create broad candidate neighborhoods with high recall.
+2. For every multi-paper candidate, the reasoning model receives compact paper dossiers:
+   title, abstract, and typed contribution, method, assumption, empirical-result,
+   limitation, and future-work records when available.
+3. The model must partition every paper exactly once around a concrete shared research
+   problem. A shared broad topic or model family is not sufficient, and uncertain papers
+   become singletons instead of being forced into a misleading bucket.
+
+Candidate groups are adjudicated in bounded batches of 20 papers. Malformed, incomplete,
+or unavailable model output never drops papers; PaperTrail retains the corresponding
+hybrid candidate group and reports the fallback count in `llm_refinement` metadata.
+
 ## How PaperTrail is built
 
 ```text
@@ -280,6 +297,8 @@ immutable artifacts ──► pages, passages, captions, scientific records
                               │
                               ▼
                    SQLite FTS5 + vector index
+                              │
+                   hybrid candidates + LLM adjudication
                               │
                  ┌────────────┴────────────┐
                  ▼                         ▼
