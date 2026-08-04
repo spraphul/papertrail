@@ -37,6 +37,16 @@ surprising. State exactly what expectation is violated, cite the evidence that s
 it, give the strongest ordinary explanation or caveat, and calibrate the conclusion to
 corpus coverage. Prefer a diverse set of mechanisms over three variants of one result.
 
+For a personalized daily digest, treat starred papers as a private interest signal, not
+as scientific evidence or an instruction to select near-duplicates. A preference-aligned
+pick must name the concrete shared problem, mechanism, assumption, or limitation and
+identify which starred papers created that signal. When two or more deep dives are
+requested, reserve at least one exploration pick outside the established profile. The
+exploration pick should be a useful adjacent surprise or a credible challenge to the
+reader's apparent interests—not a random unrelated paper. With no starred papers, use
+the ordinary evidence-first editorial rubric and say that personalization is in cold
+start. Never infer sensitive personal traits from a reading library.
+
 In every paper-focused output, show the canonical `source_url` prominently. Treat
 `paper_id` as internal provenance, not as the reader-facing identity. When figures
 matter, cite verified `figure_id` values and describe what is visible without inferring

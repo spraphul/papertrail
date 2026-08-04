@@ -7,6 +7,7 @@ import re
 import tempfile
 import threading
 import unittest
+from datetime import date
 from http.server import ThreadingHTTPServer
 from io import StringIO
 from pathlib import Path
@@ -15,6 +16,14 @@ from unittest.mock import patch
 from papertrail.cli import main, parser
 from papertrail.api import PaperTrailHandler
 from papertrail.config import Settings, settings
+from papertrail.daily_digest import (
+    _candidates,
+    _personalization_profile,
+    _prompt,
+    _upsert_run,
+    _validate_and_store,
+    get_blog,
+)
 from papertrail.intelligence import ResearchIntelligence
 from papertrail.organization import organize_snapshot
 from papertrail.profile import configure_runtime, load_profile, save_profile
@@ -111,6 +120,17 @@ class ClusteringProvider:
                 }
             ]
         }
+
+
+class PreferenceProvider(FakeProvider):
+    provider_name = "fake-preference"
+    embedding_model = "fake-interest-space"
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [
+            [0.0, 1.0, 0.0] if "protein" in text.casefold() else [1.0, 0.0, 0.0]
+            for text in texts
+        ]
 
 
 class PublicPaperTrailTests(unittest.TestCase):
@@ -210,6 +230,155 @@ class PublicPaperTrailTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    def test_favourites_personalize_and_explain_daily_blog_selection(self) -> None:
+        provider = PreferenceProvider()
+        self.service = PaperTrail(
+            Settings(
+                self.home,
+                intelligence_provider=provider.provider_name,
+                embedding_provider=provider.provider_name,
+                reasoning_provider=provider.provider_name,
+                embedding_model=provider.embedding_model,
+                reasoning_model=provider.reasoning_model,
+            )
+        )
+        self.service.initialize()
+        favorite = self.service.ingest_text(
+            "Tool agents fail after schemas rename required arguments.",
+            title="Tool Schema Recovery",
+            abstract="Recovering tool-using agents after interface schema drift.",
+            source_url="https://example.org/favorite-agent",
+        )
+        aligned = self.service.ingest_text(
+            "A controller repairs agent tool calls after argument names change.",
+            title="Adaptive Tool Call Repair",
+            abstract="Agent recovery under changing tool interfaces and renamed arguments.",
+            source_url="https://example.org/aligned-agent",
+        )
+        exploration = self.service.ingest_text(
+            "A generative model discovers stable protein folding pathways.",
+            title="Protein Folding Search",
+            abstract="Generative exploration of stable protein structures.",
+            source_url="https://example.org/protein",
+        )
+        ResearchIntelligence(self.service, provider).enrich(extraction_types=())
+        self.service.set_favorite(favorite["paper_id"], True)
+        profile = _personalization_profile(self.service, organization=None, enabled=True)
+        candidates = _candidates(
+            self.service,
+            [exploration["paper_id"], aligned["paper_id"]],
+            40,
+            personalization=profile,
+        )
+        scores = {item["paper_id"]: item["preference_score"] for item in candidates}
+        self.assertTrue(profile["active"])
+        self.assertEqual(profile["embedding_model"], "fake-preference:fake-interest-space")
+        semantic_scores = {
+            item["paper_id"]: item["semantic_preference_score"] for item in candidates
+        }
+        self.assertGreater(
+            semantic_scores[aligned["paper_id"]], semantic_scores[exploration["paper_id"]]
+        )
+        self.assertGreater(scores[aligned["paper_id"]], scores[exploration["paper_id"]])
+        prompt = _prompt(
+            "personalized-snapshot",
+            candidates,
+            2,
+            personalization=profile,
+        )
+        self.assertIn("at least one preference-aligned paper", prompt)
+        self.assertIn(favorite["paper_id"], prompt)
+
+        evidence = {}
+        for paper_id, query in (
+            (aligned["paper_id"], "controller repairs agent tool calls"),
+            (exploration["paper_id"], "protein folding stable"),
+        ):
+            result = self.service.search(query)
+            evidence[paper_id] = next(
+                item["evidence_id"] for item in result["results"] if item["paper_id"] == paper_id
+            )
+        run_id = "digest_personalized_test"
+        _upsert_run(
+            self.service,
+            run_id,
+            run_date=date.today().isoformat(),
+            snapshot_id="personalized-snapshot",
+            agent_client="codex",
+            agent_model=None,
+            status="running",
+            candidate_ids=[aligned["paper_id"], exploration["paper_id"]],
+        )
+
+        def blog_item(
+            paper_id: str,
+            title: str,
+            mode: str,
+            reason: str,
+            matched: list[str],
+        ) -> dict:
+            evidence_id = evidence[paper_id]
+            return {
+                "paper_id": paper_id,
+                "title": title,
+                "dek": "An evidence-grounded deep dive.",
+                "surprise": "The result changes an ordinary expectation.",
+                "selection_mode": mode,
+                "selection_reason": reason,
+                "matched_favorite_ids": matched,
+                "markdown": " ".join(["analysis"] * 700) + f" [{evidence_id}]",
+                "evidence_ids": [evidence_id],
+                "figure_ids": [],
+                "themes": ["testing"],
+                "related_paper_ids": [],
+            }
+
+        output = {
+            "headline": "Personalized research trail",
+            "synthesis": "One aligned paper and one exploration paper.",
+            "trends": ["Interface adaptation"],
+            "blogs": [
+                blog_item(
+                    aligned["paper_id"],
+                    "Repairing Tool Calls After Drift",
+                    "preference",
+                    "Matches the saved interest in tool-schema recovery and interface drift.",
+                    [favorite["paper_id"]],
+                ),
+                blog_item(
+                    exploration["paper_id"],
+                    "Exploring Protein Folding Search",
+                    "exploration",
+                    "Provides a deliberate mechanism-level excursion beyond the agent profile.",
+                    [],
+                ),
+            ],
+        }
+        echo_chamber = json.loads(json.dumps(output))
+        echo_chamber["blogs"][1]["selection_mode"] = "preference"
+        echo_chamber["blogs"][1]["matched_favorite_ids"] = [favorite["paper_id"]]
+        with self.assertRaisesRegex(ValueError, "exploration"):
+            _validate_and_store(
+                self.service,
+                run_id,
+                echo_chamber,
+                candidate_ids={aligned["paper_id"], exploration["paper_id"]},
+                required_blog_count=2,
+                personalization=profile,
+            )
+        saved = _validate_and_store(
+            self.service,
+            run_id,
+            output,
+            candidate_ids={aligned["paper_id"], exploration["paper_id"]},
+            required_blog_count=2,
+            personalization=profile,
+        )
+        modes = {
+            get_blog(self.service, item["slug"])["selection_mode"] for item in saved["blogs"]
+        }
+        self.assertEqual(modes, {"preference", "exploration"})
 
     def test_local_intelligence_embeds_and_hybrid_searches(self) -> None:
         self.ingest()

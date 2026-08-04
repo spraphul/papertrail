@@ -68,11 +68,17 @@ function bindStars() {
   });
 }
 
+function selectionChip(blog) {
+  const mode = blog.selection_mode || 'editorial';
+  const labels = {preference: 'For you', exploration: 'Explore', editorial: 'Editor pick'};
+  return `<span class="selection-chip ${esc(mode)}">${labels[mode] || labels.editorial}</span>`;
+}
+
 function card(blog) {
   return `<article class="blog-card"><div class="card-top"><div class="tags">` +
-    `${blog.themes.slice(0, 3).map(theme => `<span class="tag">${esc(theme)}</span>`).join('')}</div>` +
+    `${selectionChip(blog)}${blog.themes.slice(0, 2).map(theme => `<span class="tag">${esc(theme)}</span>`).join('')}</div>` +
     `${starButton(blog.paper_id, true)}</div><h3>${esc(blog.title)}</h3><p>${esc(blog.dek)}</p>` +
-    `<p class="why">${esc(blog.surprise)}</p>` +
+    `<p class="selection-reason">${esc(blog.selection_reason)}</p><p class="why">${esc(blog.surprise)}</p>` +
     `<a href="#/blog/${encodeURIComponent(blog.slug)}">Read the deep dive →</a></article>`;
 }
 
@@ -187,6 +193,8 @@ async function blog(slug) {
     `<span>${esc((value.authors || []).join(', '))}</span><span>${esc(value.published_date || '')}</span></div>` +
     `<div class="actions"><button class="button" id="read-paper">Read paper</button>` +
     `<a class="button secondary" href="${safeUrl(value.source_url)}" target="_blank" rel="noreferrer">Open source ↗</a></div>` +
+    `<div class="panel selection-panel"><span class="eyebrow">${selectionChip(value)} Why this was picked</span>` +
+    `<p>${esc(value.selection_reason)}</p></div>` +
     `<div class="panel" style="margin-bottom:35px"><span class="eyebrow">Why it surprised us</span>` +
     `<p class="why">${esc(value.surprise)}</p></div><div class="prose">${markdown(value.markdown)}</div>` +
     `${value.figure_ids.map((id, index) => `<figure class="figure"><img loading="lazy" ` +

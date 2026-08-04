@@ -31,6 +31,13 @@ Stars in paper lists and deep dives save papers to the dashboard's Favourites vi
 library is stored in the same local SQLite database, survives restarts and daily runs,
 and remains user-controlled—the read-only MCP server cannot change it.
 
+Favourites also personalize future daily deep-dive selection. PaperTrail derives a local
+interest profile from starred embeddings, titles, abstracts, extracted scientific
+records, themes, and research neighborhoods. With two or more daily picks, at least one slot is reserved
+for exploration outside the profile to avoid a relevance echo chamber. Each article
+shows whether it was selected “For you,” as an “Explore” pick, or by the cold-start
+editorial rubric. Disable this during setup with `--no-personalized-blogs`.
+
 ## What it does
 
 - Imports one PDF, one arXiv paper, or a date-bounded arXiv corpus.

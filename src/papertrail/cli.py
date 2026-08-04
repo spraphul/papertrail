@@ -61,6 +61,11 @@ def _add_daily_setup_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--analyst-model", help="optional model override for the analyst CLI")
     command.add_argument("--daily-blogs", type=int, choices=(1, 2, 3), default=3)
     command.add_argument(
+        "--no-personalized-blogs",
+        action="store_true",
+        help="ignore favourites when selecting daily deep dives",
+    )
+    command.add_argument(
         "--max-clusters",
         type=int,
         default=48,
@@ -551,6 +556,7 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
             "analyst_executable": analyst_executable,
             "analyst_model": arguments.analyst_model,
             "blog_count": arguments.daily_blogs,
+            "personalized_blogs": not arguments.no_personalized_blogs,
             "max_clusters": arguments.max_clusters,
             "cluster_similarity_threshold": arguments.cluster_threshold,
         },
@@ -672,6 +678,7 @@ def _run_daily(service: PaperTrail) -> dict[str, Any]:
             agent_executable=daily.get("analyst_executable"),
             max_blogs=int(daily.get("blog_count", 3)),
             organization=organization,
+            personalize=bool(daily.get("personalized_blogs", True)),
         )
     except (ValueError, RuntimeError, OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
         analysis = {

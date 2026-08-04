@@ -193,6 +193,14 @@ CREATE TABLE IF NOT EXISTS daily_blogs (
 
 CREATE INDEX IF NOT EXISTS daily_blogs_created_idx ON daily_blogs(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS daily_blog_personalization (
+    blog_id TEXT PRIMARY KEY REFERENCES daily_blogs(id) ON DELETE CASCADE,
+    selection_mode TEXT NOT NULL,
+    selection_reason TEXT NOT NULL,
+    matched_favorite_ids_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS paper_favorites (
     paper_id TEXT PRIMARY KEY REFERENCES papers(id) ON DELETE CASCADE,
     created_at TEXT NOT NULL
