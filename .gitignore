@@ -1,0 +1,21 @@
+.papertrail/
+.venv/
+.papertrail-venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Generated client connections contain machine-specific absolute paths.
+.codex/
+.claude/
+.mcp.json
+
+# Local research outputs may contain corpus-specific evidence identifiers.
+research/
+
+# The original design brief is a local input, not part of the distributable package.
+/PaperTrail Research Intelligence Platform.pdf

@@ -1,0 +1,23 @@
+Abstract
+
+Long-running agents encounter tool errors, changed interfaces, and partial observations. We study a recovery signal that predicts whether an intermediate failure can be corrected before the agent spends more compute.
+
+Introduction
+
+Agent reliability is often measured only by final task success. That aggregate score hides whether an agent can recognize an error, backtrack, and recover after a tool failure. A useful evaluation should preserve the failure point and record the recovery trajectory.
+
+Method
+
+Our controller estimates recoverability after every tool response. It chooses among continuing, retrying with corrected arguments, backtracking to an earlier state, or escalating to a human. The controller is trained only on trajectories whose failure and recovery actions are recorded.
+
+Experiments
+
+We evaluate under renamed tool fields, missing optional results, and delayed responses. The recovery-aware controller completes 72 percent of perturbed tasks, compared with 58 percent for a verifier-only baseline. Both systems receive the same tool outputs and compute budget.
+
+Limitations
+
+The benchmark uses simulated tool failures and a small set of interfaces. The result does not establish robustness to unseen real-world services. Human escalation cost was not measured.
+
+Conclusion
+
+Recoverability is distinct from ordinary final-answer verification. Future work should test interface drift over longer periods and measure the cost of escalation.

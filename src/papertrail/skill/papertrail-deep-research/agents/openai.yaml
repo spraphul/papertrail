@@ -1,0 +1,6 @@
+interface:
+  display_name: "PaperTrail Deep Research"
+  short_description: "Evidence-grounded literature search and idea discovery"
+  default_prompt: "Use $papertrail-deep-research to map prior work, challenge novelty, and cite exact local evidence for this topic."
+policy:
+  allow_implicit_invocation: true
