@@ -13,6 +13,7 @@ from typing import Any
 
 from .db import connect, transaction
 from .organization import latest_organization
+from .preferences import aggregate_profile
 from .service import PaperTrail, stable_id, utc_now
 
 
@@ -42,6 +43,10 @@ OUTPUT_SCHEMA: dict[str, Any] = {
                         "type": "array",
                         "items": {"type": "string"},
                     },
+                    "matched_preference_labels": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
                     "markdown": {"type": "string"},
                     "evidence_ids": {"type": "array", "items": {"type": "string"}},
                     "figure_ids": {
@@ -63,6 +68,7 @@ OUTPUT_SCHEMA: dict[str, Any] = {
                     "selection_mode",
                     "selection_reason",
                     "matched_favorite_ids",
+                    "matched_preference_labels",
                     "markdown",
                     "evidence_ids",
                     "figure_ids",
@@ -217,7 +223,8 @@ def dashboard_data(service: PaperTrail) -> dict[str, Any]:
                 SELECT b.*, p.canonical_title AS paper_title, p.published_date,
                        p.authors_json, r.run_date, r.headline AS digest_headline,
                        x.selection_mode, x.selection_reason,
-                       x.matched_favorite_ids_json
+                       x.matched_favorite_ids_json,
+                       x.matched_preference_labels_json
                 FROM daily_blogs b
                 JOIN papers p ON p.id = b.paper_id
                 JOIN daily_digest_runs r ON r.id = b.digest_run_id
@@ -271,7 +278,8 @@ def get_blog(service: PaperTrail, slug: str) -> dict[str, Any]:
             SELECT b.*, p.canonical_title AS paper_title, p.published_date,
                    p.authors_json, r.run_date, r.headline AS digest_headline,
                    x.selection_mode, x.selection_reason,
-                   x.matched_favorite_ids_json
+                   x.matched_favorite_ids_json,
+                   x.matched_preference_labels_json
             FROM daily_blogs b JOIN papers p ON p.id = b.paper_id
             JOIN daily_digest_runs r ON r.id = b.digest_run_id
             LEFT JOIN daily_blog_personalization x ON x.blog_id = b.id
@@ -389,12 +397,15 @@ def _personalization_profile(
     organization: dict[str, Any] | None,
     enabled: bool,
 ) -> dict[str, Any]:
+    research_profile = aggregate_profile(service, persist=False) if enabled else {}
     empty = {
         "enabled": enabled,
         "active": False,
         "favorite_ids": [],
         "papers": [],
         "top_terms": [],
+        "preference_labels": [],
+        "negative_labels": [],
         "themes": [],
         "research_groups": [],
     }
@@ -415,29 +426,28 @@ def _personalization_profile(
                 "SELECT paper_id FROM paper_favorites ORDER BY created_at DESC"
             )
         ]
-        if not favorites:
-            return empty
         favorite_ids = [row["paper_id"] for row in favorites]
-        marks = ",".join("?" for _ in favorite_ids)
         records: dict[str, dict[str, list[str]]] = {}
-        for row in db.execute(
-            f"""
-            SELECT paper_id, record_type, statement FROM scientific_records
-            WHERE paper_id IN ({marks})
-            ORDER BY confidence DESC, created_at DESC
-            """,
-            favorite_ids,
-        ):
-            bucket = records.setdefault(row["paper_id"], {}).setdefault(row["record_type"], [])
-            if len(bucket) < 2:
-                bucket.append(_clip(row["statement"], 320))
+        marks = ",".join("?" for _ in favorite_ids)
         theme_counts: dict[str, int] = {}
-        for row in db.execute(
-            f"SELECT themes_json FROM daily_blogs WHERE paper_id IN ({marks})",
-            favorite_ids,
-        ):
-            for theme in json.loads(row["themes_json"]):
-                theme_counts[str(theme)] = theme_counts.get(str(theme), 0) + 1
+        if favorite_ids:
+            for row in db.execute(
+                f"""
+                SELECT paper_id, record_type, statement FROM scientific_records
+                WHERE paper_id IN ({marks})
+                ORDER BY confidence DESC, created_at DESC
+                """,
+                favorite_ids,
+            ):
+                bucket = records.setdefault(row["paper_id"], {}).setdefault(row["record_type"], [])
+                if len(bucket) < 2:
+                    bucket.append(_clip(row["statement"], 320))
+            for row in db.execute(
+                f"SELECT themes_json FROM daily_blogs WHERE paper_id IN ({marks})",
+                favorite_ids,
+            ):
+                for theme in json.loads(row["themes_json"]):
+                    theme_counts[str(theme)] = theme_counts.get(str(theme), 0) + 1
         embedding_model = (
             f"{service.settings.embedding_provider}:{service.settings.embedding_model}"
         )
@@ -467,6 +477,10 @@ def _personalization_profile(
         )
         for token in _preference_tokens(text):
             term_counts[token] = term_counts.get(token, 0) + 1
+    preference_labels = list(research_profile.get("positive_labels", []))
+    for label in preference_labels:
+        for token in _preference_tokens(label):
+            term_counts[token] = term_counts.get(token, 0) + 2
     groups = []
     prompt_favorite_ids = set(favorite_ids)
     for group in (organization or {}).get("groups", []):
@@ -484,13 +498,17 @@ def _personalization_profile(
             )
     return {
         "enabled": True,
-        "active": True,
+        "active": bool(favorites or research_profile.get("active")),
         "favorite_ids": all_favorite_ids,
         "papers": paper_context,
         "top_terms": [
             term
             for term, _ in sorted(term_counts.items(), key=lambda item: (-item[1], item[0]))[:30]
         ],
+        "preference_labels": preference_labels,
+        "negative_labels": list(research_profile.get("negative_labels", [])),
+        "preference_event_count": int(research_profile.get("event_count", 0)),
+        "preference_session_count": int(research_profile.get("session_count", 0)),
         "themes": [
             theme
             for theme, _ in sorted(theme_counts.items(), key=lambda item: (-item[1], item[0]))[:12]
@@ -630,8 +648,12 @@ def _prompt(
     ]
     profile = personalization or {"enabled": False, "active": False}
     if profile.get("active"):
+        source_summary = (
+            f"{len(profile.get('favorite_ids', []))} starred papers and "
+            f"{profile.get('preference_event_count', 0)} derived chat-interest signals"
+        )
         selection_policy = (
-            f"Personalization is active from {len(profile['favorite_ids'])} starred papers. "
+            f"Personalization is active from {source_summary}. "
             + (
                 "Choose exactly one preference-aligned paper."
                 if blog_count == 1
@@ -640,16 +662,17 @@ def _prompt(
                 f"{blog_count - 1} preference-aligned papers."
             )
             + " For a preference pick, selection_mode must be 'preference', name one or more "
-            "actual matched favorite IDs, and explain the concrete problem, mechanism, or "
-            "limitation connection. For an exploration pick, selection_mode must be "
-            "'exploration', matched_favorite_ids must be empty, and explain why the paper is a "
+            "actual matched favourite IDs and/or exact matched preference labels from the local "
+            "profile, and explain the concrete problem, mechanism, or limitation connection. "
+            "For an exploration pick, selection_mode must be 'exploration', both match arrays "
+            "must be empty, and explain why the paper is a "
             "useful surprise rather than random novelty. Favourites are ranking signals, not "
             "evidence; verify every scientific claim from the selected paper and corpus."
         )
     else:
         selection_policy = (
             "No active favourite profile is available. Use selection_mode 'editorial', keep "
-            "matched_favorite_ids empty, and explain the evidence-based editorial reason."
+            "both match arrays empty, and explain the evidence-based editorial reason."
         )
     return f"""
 Use $papertrail-deep-research and only the read-only PaperTrail MCP tools.
@@ -668,7 +691,8 @@ figure actually shows. Do not write files or use shell tools.
 Return only the requested JSON. Candidate papers:
 {json.dumps(compact, separators=(',', ':'))}
 
-Local preference profile derived from starred papers. Use it only for selection and
+Local preference profile derived from starred papers and consented Codex/Claude research chats.
+Use it only for selection and
 personalization—not as evidence about a candidate paper:
 {json.dumps({key: value for key, value in profile.items() if key not in {'enabled', 'favorite_ids', 'preference_vector'}}, separators=(',', ':'))}
 
@@ -798,6 +822,9 @@ def _validate_and_store(
     if not isinstance(blogs, list) or len(blogs) != required_blog_count:
         raise ValueError(f"Daily agent must return exactly {required_blog_count} blogs")
     favorite_ids = set(personalization.get("favorite_ids", []))
+    preference_labels = {
+        str(label).casefold() for label in personalization.get("preference_labels", [])
+    }
     personalization_active = bool(personalization.get("active"))
     modes = [str(item.get("selection_mode", "")) for item in blogs]
     if personalization_active:
@@ -862,17 +889,29 @@ def _validate_and_store(
             matched_favorite_ids = list(
                 dict.fromkeys(map(str, item.get("matched_favorite_ids", [])))
             )
+            matched_preference_labels = list(
+                dict.fromkeys(map(str, item.get("matched_preference_labels", [])))
+            )
             if selection_mode not in {"preference", "exploration", "editorial"}:
                 raise ValueError(f"Daily blog for {paper_id} has an invalid selection mode")
             if len(selection_reason) < 20:
                 raise ValueError(f"Daily blog for {paper_id} has no meaningful selection reason")
             if any(favorite_id not in favorite_ids for favorite_id in matched_favorite_ids):
                 raise ValueError(f"Daily blog for {paper_id} cites an unknown favourite")
-            if selection_mode == "preference" and not matched_favorite_ids:
-                raise ValueError(f"Preference blog for {paper_id} names no matching favourite")
-            if selection_mode != "preference" and matched_favorite_ids:
+            if any(
+                label.casefold() not in preference_labels
+                for label in matched_preference_labels
+            ):
+                raise ValueError(f"Daily blog for {paper_id} cites an unknown preference label")
+            if selection_mode == "preference" and not (
+                matched_favorite_ids or matched_preference_labels
+            ):
+                raise ValueError(f"Preference blog for {paper_id} names no matching preference")
+            if selection_mode != "preference" and (
+                matched_favorite_ids or matched_preference_labels
+            ):
                 raise ValueError(
-                    f"Non-preference blog for {paper_id} must not claim favourite matches"
+                    f"Non-preference blog for {paper_id} must not claim preference matches"
                 )
             title = str(item.get("title", "")).strip()
             if not all(
@@ -913,12 +952,13 @@ def _validate_and_store(
                 values,
             )
             db.execute(
-                "INSERT INTO daily_blog_personalization VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO daily_blog_personalization VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     blog_id,
                     selection_mode,
                     selection_reason,
                     json.dumps(matched_favorite_ids),
+                    json.dumps(matched_preference_labels),
                     utc_now(),
                 ),
             )
@@ -930,6 +970,7 @@ def _validate_and_store(
                     "selection_mode": selection_mode,
                     "selection_reason": selection_reason,
                     "matched_favorite_ids": matched_favorite_ids,
+                    "matched_preference_labels": matched_preference_labels,
                 }
             )
         db.execute(
@@ -1000,6 +1041,8 @@ def _blog_row(row: Any) -> dict[str, Any]:
         value[target] = json.loads(value.pop(source))
     matched = value.pop("matched_favorite_ids_json", None)
     value["matched_favorite_ids"] = json.loads(matched) if matched else []
+    matched_labels = value.pop("matched_preference_labels_json", None)
+    value["matched_preference_labels"] = json.loads(matched_labels) if matched_labels else []
     value["selection_mode"] = value.get("selection_mode") or "editorial"
     value["selection_reason"] = value.get("selection_reason") or (
         "Selected by the evidence-first editorial rubric before personalization was available."

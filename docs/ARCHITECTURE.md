@@ -33,6 +33,15 @@ immutable artifacts ──► sections ──► evidence passages
                          validated trends + Markdown deep dives
                                            │
                           local dashboard + PDF/figure reader
+
+consented local Codex / Claude histories
+        │ read-only adapters; user turns only
+        ▼
+redaction ──► structured research-interest events ──► versioned preference profile
+                                                           │
+favourites ────────────────────────────────────────────────┘
+                                                           │
+                              daily enrichment lane allocation (60/20/20)
 ```
 
 ## Durable contracts
@@ -63,16 +72,41 @@ Novelty and discovery runs are persisted with input, snapshot, exact evidence ID
 
 ### Daily intelligence
 
-The daily scheduler overlaps acquisition windows but enriches only unfinished paper
-versions and extractor types. After publishing an immutable rolling snapshot, a bounded
-Codex or Claude process receives at most 40 newly acquired candidates and can use only
-the read-only research surface. Candidate inputs, client/model, status, trends, and
-failures are stored in `daily_digest_runs`.
+The daily scheduler overlaps discovery windows and retains metadata plus abstracts for
+the complete configured surplus. A configurable budget, 40 papers by default, determines
+which pending papers receive PDF acquisition and full enrichment. Once a preference
+profile is sufficiently reliable, the default allocation is 60% aligned work, 20%
+frontier work, and 20% deliberate exploration. Scores, lane, explanation, and profile
+version are stored for every discovery record considered.
+
+After publishing an immutable rolling snapshot, a bounded Codex or Claude process
+receives at most 40 newly acquired candidates and can use only the read-only research
+surface. Candidate inputs, client/model, status, trends, and failures are stored in
+`daily_digest_runs`.
 
 Blogs enter `daily_blogs` only after their selected paper, canonical source URL, exact
 evidence IDs, figure IDs, related paper IDs, and length have been validated locally.
 The dashboard reads those tables directly. Paper PDFs and figures are served by stable
 IDs from the artifact store; arbitrary filesystem paths are never accepted.
+
+### Adaptive research profile
+
+Chat learning is off until setup records source-specific consent. Read-only adapters
+discover local Codex and Claude JSON/JSONL sessions, extract user-authored research turns,
+redact credential-shaped content, and pass bounded text to the configured reasoning
+provider. With a remote provider, that redacted input leaves the machine; setup and the
+README make this explicit.
+
+PaperTrail persists opaque session fingerprints, content digests, normalized research
+events, and aggregate profile versions. It never persists raw conversation turns or
+assistant answers. Unchanged digests cause no model call, while changed sessions replace
+their earlier derived events transactionally. Disabling stops future reads but retains
+derived signals; forgetting removes consent, hashes, and events for that source.
+
+Preference signals rank candidates but cannot support scientific claims. Favourites have
+the highest authority, explicit chat interests outrank inferred ones, and chat signals
+decay over time. Personalized ingestion activates after three favourites or eight
+high-confidence events spanning at least three sessions with an explicit interest.
 
 ### Organization and consolidation
 
@@ -97,6 +131,8 @@ exact passages.
 - Empty retrieval returns an explicit warning.
 - A snapshot pins exact paper versions and cannot be republished with different contents.
 - Failed daily analysis does not roll back ingestion and retains its candidate set for retry.
+- A malformed or unavailable history source does not stop paper discovery or ingestion.
+- Preference cursors advance only after validated extraction succeeds.
 - A blog citing evidence or figures owned by another paper is rejected atomically.
 - Generated opportunities remain labeled system synthesis and never become source evidence.
 

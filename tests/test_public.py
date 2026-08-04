@@ -4,9 +4,11 @@ import json
 import http.client
 import os
 import re
+import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import closing
 from datetime import date
 from http.server import ThreadingHTTPServer
 from io import StringIO
@@ -430,7 +432,43 @@ class PublicPaperTrailTests(unittest.TestCase):
         configured = load_profile(self.home)
         self.assertEqual(configured["providers"]["reasoning_provider"], "ollama")
         self.assertEqual(configured["daily"]["category"], "cs.AI")
+        self.assertFalse(configured["preferences"]["chat_learning"])
         self.assertIn('"profile": "local"', output.getvalue())
+
+    def test_setup_records_explicit_automatic_chat_learning_consent(self) -> None:
+        output = StringIO()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("papertrail.cli.connect_agent", return_value={"status": "connected"}),
+            patch("papertrail.cli.shutil.which", return_value="/usr/local/bin/codex"),
+            patch("sys.stdout", output),
+        ):
+            main(
+                [
+                    "--home",
+                    str(self.home),
+                    "setup",
+                    "--learn-from",
+                    "codex",
+                    "--daily-enrichment-budget",
+                    "25",
+                    "--no-schedule",
+                    "--no-dashboard",
+                ]
+            )
+        configured = load_profile(self.home)
+        self.assertTrue(configured["preferences"]["chat_learning"])
+        self.assertTrue(configured["preferences"]["sources"]["codex"]["enabled"])
+        self.assertFalse(configured["preferences"]["sources"]["claude"]["enabled"])
+        self.assertEqual(
+            configured["preferences"]["ingestion"]["daily_enrichment_budget"], 25
+        )
+        with closing(sqlite3.connect(self.service.settings.database_path)) as db:
+            row = db.execute(
+                "SELECT enabled, consented_at FROM preference_sources WHERE source = 'codex'"
+            ).fetchone()
+        self.assertEqual(row[0], 1)
+        self.assertIsNotNone(row[1])
 
     def test_openai_embeddings_are_batched_and_ordered_by_index(self) -> None:
         provider = OpenAIProvider(

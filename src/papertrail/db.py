@@ -198,6 +198,7 @@ CREATE TABLE IF NOT EXISTS daily_blog_personalization (
     selection_mode TEXT NOT NULL,
     selection_reason TEXT NOT NULL,
     matched_favorite_ids_json TEXT NOT NULL DEFAULT '[]',
+    matched_preference_labels_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL
 );
 
@@ -208,6 +209,65 @@ CREATE TABLE IF NOT EXISTS paper_favorites (
 
 CREATE INDEX IF NOT EXISTS paper_favorites_created_idx
 ON paper_favorites(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS preference_sources (
+    source TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    consented_at TEXT,
+    history_path TEXT,
+    last_scanned_at TEXT,
+    status TEXT NOT NULL DEFAULT 'disabled',
+    error_summary TEXT
+);
+
+CREATE TABLE IF NOT EXISTS preference_sessions (
+    fingerprint TEXT PRIMARY KEY,
+    source TEXT NOT NULL REFERENCES preference_sources(source) ON DELETE CASCADE,
+    content_digest TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    processed_at TEXT NOT NULL,
+    event_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS preference_sessions_source_idx
+ON preference_sessions(source, processed_at DESC);
+
+CREATE TABLE IF NOT EXISTS preference_events (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL REFERENCES preference_sources(source) ON DELETE CASCADE,
+    session_fingerprint TEXT NOT NULL REFERENCES preference_sessions(fingerprint)
+        ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    context TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL,
+    explicitness TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS preference_events_source_label_idx
+ON preference_events(source, label, observed_at DESC);
+
+CREATE TABLE IF NOT EXISTS preference_profile_versions (
+    id TEXT PRIMARY KEY,
+    summary_json TEXT NOT NULL,
+    active_for_ingestion INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS paper_priority_scores (
+    discovery_id TEXT NOT NULL REFERENCES discovery_records(id) ON DELETE CASCADE,
+    profile_version_id TEXT NOT NULL REFERENCES preference_profile_versions(id),
+    affinity_score REAL NOT NULL,
+    frontier_score REAL NOT NULL,
+    exploration_score REAL NOT NULL,
+    final_score REAL NOT NULL,
+    lane TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(discovery_id, profile_version_id)
+);
 
 CREATE TABLE IF NOT EXISTS organization_runs (
     id TEXT PRIMARY KEY,
@@ -361,6 +421,16 @@ def initialize(path: Path) -> None:
                 INSERT INTO discovery_fts (discovery_id, title, abstract, authors, categories)
                 SELECT id, title, abstract, authors_json, categories_json FROM discovery_records
                 """
+            )
+            connection.commit()
+        personalization_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(daily_blog_personalization)")
+        }
+        if "matched_preference_labels_json" not in personalization_columns:
+            connection.execute(
+                "ALTER TABLE daily_blog_personalization "
+                "ADD COLUMN matched_preference_labels_json TEXT NOT NULL DEFAULT '[]'"
             )
             connection.commit()
 

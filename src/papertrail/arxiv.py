@@ -21,7 +21,7 @@ def import_paper(service: PaperTrail, arxiv_id: str) -> dict[str, Any]:
     identifier = normalize_arxiv_id(arxiv_id)
     request = urllib.request.Request(
         f"https://export.arxiv.org/api/query?id_list={identifier}",
-        headers={"User-Agent": "PaperTrailLocal/0.5 (personal research index)"},
+        headers={"User-Agent": "PaperTrailLocal/0.10 (personal research index)"},
     )
     with urllib.request.urlopen(request, timeout=30) as response:
         root = ET.fromstring(response.read())
@@ -37,7 +37,7 @@ def import_paper(service: PaperTrail, arxiv_id: str) -> dict[str, Any]:
     ]
     pdf_url = f"https://arxiv.org/pdf/{identifier}"
     pdf_request = urllib.request.Request(
-        pdf_url, headers={"User-Agent": "PaperTrailLocal/0.5 (personal research index)"}
+        pdf_url, headers={"User-Agent": "PaperTrailLocal/0.10 (personal research index)"}
     )
     with urllib.request.urlopen(pdf_request, timeout=90) as response:
         content = response.read()

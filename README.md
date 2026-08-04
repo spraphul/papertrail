@@ -31,12 +31,13 @@ Stars in paper lists and deep dives save papers to the dashboard's Favourites vi
 library is stored in the same local SQLite database, survives restarts and daily runs,
 and remains user-controlled—the read-only MCP server cannot change it.
 
-Favourites also personalize future daily deep-dive selection. PaperTrail derives a local
-interest profile from starred embeddings, titles, abstracts, extracted scientific
-records, themes, and research neighborhoods. With two or more daily picks, at least one slot is reserved
-for exploration outside the profile to avoid a relevance echo chamber. Each article
-shows whether it was selected “For you,” as an “Explore” pick, or by the cold-start
-editorial rubric. Disable this during setup with `--no-personalized-blogs`.
+Favourites and, with explicit consent, local Codex or Claude research chats personalize
+future ingestion and deep-dive selection. PaperTrail stores normalized research-interest
+signals and opaque session hashes—not copies of conversations. It retains metadata and
+abstracts for the complete configured paper surplus, then directs expensive PDF and model
+enrichment toward a 60/20/20 mix of preference-aligned, frontier, and exploratory work.
+With two or more daily deep dives, an exploration slot remains mandatory to avoid a
+relevance echo chamber.
 
 ## What it does
 
@@ -49,6 +50,8 @@ editorial rubric. Disable this during setup with `--no-personalized-blogs`.
 - Builds high-recall hybrid candidate neighborhoods, then uses the configured reasoning
   model to remove topical false positives and form precise shared-problem groups.
 - Lets you star papers into a persistent local Favourites library.
+- Automatically learns durable research interests from consented local Codex and Claude
+  histories and provides inspect, disable, forget, and rebuild controls.
 - Exposes fourteen read-only MCP tools plus a `papertrail-deep-research` Agent Skill.
 - Produces daily trends and 1–3 source-linked deep-dive essays when configured with an
   analyst CLI.
@@ -252,14 +255,27 @@ One setup command configures model providers, daily incremental `cs.AI` ingestio
 Codex or Claude analysis, the dashboard, and a macOS launchd schedule:
 
 ```bash
-papertrail --home "$HOME/.papertrail" setup
+papertrail --home "$HOME/.papertrail" setup \
+  --learn-from codex \
+  --learn-from claude
 ```
+
+The consent flags are recorded once. After that, every scheduled daily run automatically
+processes only new or changed local sessions before discovering papers. In an interactive
+terminal, setup can ask for the same consent. Existing installations and non-interactive
+setup remain opted out unless `--learn-from` is supplied.
+
+Preference extraction uses the configured reasoning provider. With Ollama, redacted turns
+remain on the machine; with OpenAI or another remote-compatible endpoint, the bounded,
+redacted user turns are sent to that provider for extraction. Raw conversations are never
+copied into PaperTrail's profile or database.
 
 Useful controls include `--daily-at 06:00`, `--lookback-days 3`,
 `--rolling-window-days 365`, `--analyst codex|claude`, `--daily-blogs 1|2|3`, repeated
 `--client codex|claude`, `--embedding-provider ollama|openai`,
 `--reasoning-provider ollama|openai`, model IDs, `--dashboard-port 8765`, and
-`--no-schedule`.
+`--daily-enrichment-budget 40`, `--no-personalized-ingestion`, and `--no-schedule`.
+Set the enrichment budget to `0` to fully acquire every discovered daily paper.
 
 The selected analyst CLI must already be installed and authenticated. Ollama must be
 running when selected. For an environment-only OpenAI key, add `--no-schedule`:
@@ -282,6 +298,20 @@ Run the configured workflow immediately with:
 ```bash
 papertrail --home "$HOME/.papertrail" daily
 ```
+
+Inspect or reset what PaperTrail has learned without exposing conversation text:
+
+```bash
+papertrail --home "$HOME/.papertrail" preferences inspect
+papertrail --home "$HOME/.papertrail" preferences sources
+papertrail --home "$HOME/.papertrail" preferences disable claude
+papertrail --home "$HOME/.papertrail" preferences forget codex
+papertrail --home "$HOME/.papertrail" preferences rebuild
+```
+
+Disabling a source stops future scans but retains its derived signals. Forgetting removes
+its consent, session hashes, and derived signals. Personalized ingestion activates only
+after the profile reaches a confidence threshold; until then, daily selection stays broad.
 
 ### How research neighborhoods are formed
 
@@ -318,6 +348,10 @@ immutable artifacts ──► pages, passages, captions, scientific records
                  │
                  ▼
             Codex / Claude
+
+local Codex / Claude chats ──► redacted interest signals ──► enrichment priority
+                                  ▲
+                              favourites
 ```
 
 The default installation has no database service, queue, object store, or container.
@@ -332,8 +366,9 @@ The corpus lives under `PAPERTRAIL_HOME`:
     papers/<sha256-prefix>/<sha256>.pdf
 ```
 
-Only material the user imports is indexed. Corpus files, credentials, generated client
-configuration, and local research outputs are ignored by Git.
+Only sources and categories the user explicitly imports or configures are indexed. Corpus
+files, credentials, generated client configuration, and local research outputs are ignored
+by Git.
 
 ## Command map
 
@@ -348,6 +383,9 @@ configuration, and local research outputs are ignored by Git.
 | Search figures | `papertrail search-figures QUERY` |
 | Create a snapshot | `papertrail snapshot create ID` |
 | Organize a snapshot | `papertrail organize --snapshot ID` |
+| Inspect learned interests | `papertrail preferences inspect` |
+| Control chat learning | `papertrail preferences enable|disable|forget SOURCE` |
+| Run the daily adaptive workflow | `papertrail daily` |
 | Start the dashboard/API | `papertrail serve` |
 | Start MCP over stdio | `papertrail mcp` |
 | Connect an agent | `papertrail connect codex|claude` |

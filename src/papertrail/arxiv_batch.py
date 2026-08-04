@@ -146,6 +146,31 @@ class ArxivBatchIngestor:
                             utc_now(),
                         ),
                     )
+                    db.execute(
+                        """
+                        UPDATE discovery_records
+                        SET status = 'acquired', paper_id = (
+                            SELECT prior.paper_id FROM discovery_records prior
+                            WHERE prior.source = 'arxiv' AND prior.source_id = ?
+                              AND prior.status = 'acquired' AND prior.paper_id IS NOT NULL
+                              AND prior.id <> ?
+                            ORDER BY prior.discovered_at DESC LIMIT 1
+                        )
+                        WHERE id = ? AND EXISTS (
+                            SELECT 1 FROM discovery_records prior
+                            WHERE prior.source = 'arxiv' AND prior.source_id = ?
+                              AND prior.status = 'acquired' AND prior.paper_id IS NOT NULL
+                              AND prior.id <> ?
+                        )
+                        """,
+                        (
+                            record["source_id"],
+                            discovery_id,
+                            discovery_id,
+                            record["source_id"],
+                            discovery_id,
+                        ),
+                    )
                     db.execute("DELETE FROM discovery_fts WHERE discovery_id = ?", (discovery_id,))
                     db.execute(
                         """
@@ -267,6 +292,7 @@ class ArxivBatchIngestor:
         group_id: str,
         *,
         limit: int | None = None,
+        discovery_ids: list[str] | None = None,
         retry_failed: bool = False,
         primary_only: bool = False,
         min_free_gb: float = 5.0,
@@ -297,6 +323,7 @@ class ArxivBatchIngestor:
             result = self.acquire(
                 row["run_id"],
                 limit=remaining,
+                discovery_ids=discovery_ids,
                 retry_failed=retry_failed,
                 primary_only=primary_only,
                 min_free_gb=min_free_gb,
@@ -308,7 +335,13 @@ class ArxivBatchIngestor:
                 remaining -= max(0, result["acquired_count"] - before)
         status = self.group_status(group_id)
         pending_key = "primary_pending_count" if primary_only else "pending_count"
-        final = "complete" if status[pending_key] == 0 else "discovered"
+        final = (
+            "complete"
+            if status[pending_key] == 0
+            else "budgeted"
+            if discovery_ids is not None
+            else "discovered"
+        )
         with transaction(self.service.settings.database_path) as db:
             db.execute(
                 "UPDATE ingestion_groups SET status = ?, updated_at = ? WHERE id = ?",
@@ -317,6 +350,7 @@ class ArxivBatchIngestor:
         result = self.group_status(group_id)
         result["acquired_paper_ids"] = acquired_paper_ids
         result["newly_acquired_paper_ids"] = newly_acquired_paper_ids
+        result["selected_discovery_ids"] = discovery_ids
         return result
 
     def group_status(self, group_id: str) -> dict[str, Any]:
@@ -432,6 +466,7 @@ class ArxivBatchIngestor:
         run_id: str,
         *,
         limit: int | None = None,
+        discovery_ids: list[str] | None = None,
         request_delay: float = 3.1,
         retry_failed: bool = False,
         primary_only: bool = False,
@@ -459,11 +494,21 @@ class ArxivBatchIngestor:
                 category = json.loads(run["query_json"])["category"]
                 sql += " AND primary_category = ?"
                 params.append(category)
+            if discovery_ids is not None:
+                if not discovery_ids:
+                    records = []
+                else:
+                    selected_marks = ",".join("?" for _ in discovery_ids)
+                    sql += f" AND id IN ({selected_marks})"
+                    params.extend(discovery_ids)
             sql += " ORDER BY published_date, source_id"
             if limit is not None:
                 sql += " LIMIT ?"
                 params.append(limit)
-            records = db.execute(sql, params).fetchall()
+            if discovery_ids is not None and not discovery_ids:
+                records = []
+            else:
+                records = db.execute(sql, params).fetchall()
         with transaction(self.service.settings.database_path) as db:
             db.execute(
                 "UPDATE ingestion_runs SET status = 'acquiring', updated_at = ? WHERE id = ?",
@@ -645,7 +690,7 @@ class ArxivBatchIngestor:
         request = urllib.request.Request(
             url,
             headers={
-                "User-Agent": "PaperTrailLocal/0.5 (personal research index; contact: local-user)"
+                "User-Agent": "PaperTrailLocal/0.10 (personal research index; contact: local-user)"
             },
         )
         for attempt in range(3):
@@ -681,7 +726,7 @@ class ArxivBatchIngestor:
                 "--max-time",
                 str(timeout),
                 "--user-agent",
-                "PaperTrailLocal/0.5 (personal research index; contact: local-user)",
+                "PaperTrailLocal/0.10 (personal research index; contact: local-user)",
                 url,
             ],
             capture_output=True,

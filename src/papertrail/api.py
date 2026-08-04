@@ -17,7 +17,7 @@ from .intelligence import ResearchIntelligence
 class PaperTrailHandler(BaseHTTPRequestHandler):
     service: PaperTrail
     intelligence: ResearchIntelligence | None = None
-    server_version = "PaperTrail/0.9"
+    server_version = "PaperTrail/0.10"
 
     def _json(self, status: int, value: Any) -> None:
         body = json.dumps(value, indent=2).encode()

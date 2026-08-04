@@ -20,6 +20,16 @@ from .config import settings
 from .daily_digest import generate_daily_digest
 from .mcp import run as run_mcp
 from .organization import organize_snapshot
+from .preferences import (
+    configure_preference_sources,
+    forget_preferences,
+    inspect_preferences,
+    preference_sources,
+    prioritize_discoveries,
+    rebuild_preferences,
+    set_preference_source,
+    sync_preferences,
+)
 from .profile import configure_runtime, load_profile, save_profile
 from .intelligence import EXTRACTION_TYPES, ResearchIntelligence
 from .providers import provider_from_settings
@@ -66,6 +76,28 @@ def _add_daily_setup_arguments(command: argparse.ArgumentParser) -> None:
         help="ignore favourites when selecting daily deep dives",
     )
     command.add_argument(
+        "--learn-from",
+        choices=("codex", "claude"),
+        action="append",
+        help="automatically learn research preferences from this local chat history",
+    )
+    command.add_argument(
+        "--no-chat-learning",
+        action="store_true",
+        help="do not read Codex or Claude chat histories",
+    )
+    command.add_argument(
+        "--daily-enrichment-budget",
+        type=int,
+        default=40,
+        help="papers fully acquired and enriched per daily run; 0 enriches all (default: 40)",
+    )
+    command.add_argument(
+        "--no-personalized-ingestion",
+        action="store_true",
+        help="use broad ranking rather than the learned profile for daily enrichment",
+    )
+    command.add_argument(
         "--max-clusters",
         type=int,
         default=48,
@@ -99,6 +131,21 @@ def parser() -> argparse.ArgumentParser:
     _add_daily_setup_arguments(setup)
 
     commands.add_parser("daily", help="ingest the configured daily surplus and refresh the snapshot")
+    preferences = commands.add_parser(
+        "preferences", help="inspect and control the local adaptive research profile"
+    )
+    preference_commands = preferences.add_subparsers(
+        dest="preferences_command", required=True
+    )
+    preference_commands.add_parser("inspect", help="show derived research interests")
+    preference_commands.add_parser("sources", help="show local history source status")
+    for action in ("enable", "disable"):
+        command = preference_commands.add_parser(action)
+        command.add_argument("source", choices=("codex", "claude"))
+    forget = preference_commands.add_parser("forget")
+    forget.add_argument("source", choices=("codex", "claude", "all"))
+    preference_commands.add_parser("rebuild")
+    preference_commands.add_parser("sync", help="process new local chat sessions now")
     organize = commands.add_parser(
         "organize", help="hybrid-cluster snapshot papers by the problems they target"
     )
@@ -309,6 +356,8 @@ def main(argv: list[str] | None = None) -> None:
             value = _setup_local(arguments, service)
         elif arguments.command == "daily":
             value = _run_daily(service)
+        elif arguments.command == "preferences":
+            value = _run_preferences(arguments, service)
         elif arguments.command == "organize":
             value = organize_snapshot(
                 service,
@@ -498,6 +547,8 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
         raise ValueError("lookback and rolling-window days must be positive")
     if not 1 <= arguments.workers <= 8:
         raise ValueError("workers must be between 1 and 8")
+    if arguments.daily_enrichment_budget < 0:
+        raise ValueError("daily-enrichment-budget cannot be negative")
     if not 2 <= arguments.max_clusters <= 100:
         raise ValueError("max-clusters must be between 2 and 100")
     if not 0.0 < arguments.cluster_threshold < 1.0:
@@ -533,6 +584,7 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
             "load shell environment variables; use --no-schedule for environment-only use"
         )
 
+    learning_sources = _learning_sources(arguments, service)
     profile = {
         "profile": "local",
         "providers": {
@@ -557,14 +609,33 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
             "analyst_model": arguments.analyst_model,
             "blog_count": arguments.daily_blogs,
             "personalized_blogs": not arguments.no_personalized_blogs,
+            "personalized_ingestion": not arguments.no_personalized_ingestion,
+            "daily_enrichment_budget": arguments.daily_enrichment_budget,
             "max_clusters": arguments.max_clusters,
             "cluster_similarity_threshold": arguments.cluster_threshold,
+        },
+        "preferences": {
+            "chat_learning": bool(learning_sources),
+            "sources": {
+                source: {"enabled": source in learning_sources}
+                for source in ("codex", "claude")
+            },
+            "ingestion": {
+                "personalized": not arguments.no_personalized_ingestion,
+                "daily_enrichment_budget": arguments.daily_enrichment_budget,
+                "preference_share": 0.6,
+                "frontier_share": 0.2,
+                "exploration_share": 0.2,
+            },
         },
     }
     profile_path = save_profile(service.settings.home, profile)
     configure_runtime(service.settings.home)
     configured_service = PaperTrail(settings(service.settings.home))
     configured_service.initialize()
+    preference_source_status = configure_preference_sources(
+        configured_service, learning_sources
+    )
 
     clients = arguments.client or ["codex", "claude"]
     connections = [
@@ -600,6 +671,11 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
             "credential": "key-file" if openai_key_file else "environment",
         },
         "daily": profile["daily"],
+        "preferences": {
+            "automatic": bool(learning_sources),
+            "sources": preference_source_status,
+            "raw_conversations_stored": False,
+        },
         "schedule": schedule,
         "dashboard": dashboard,
         "connections": connections,
@@ -607,11 +683,68 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
     }
 
 
+def _learning_sources(arguments: argparse.Namespace, service: PaperTrail) -> list[str]:
+    if arguments.no_chat_learning:
+        if arguments.learn_from:
+            raise ValueError("Use either --learn-from or --no-chat-learning, not both")
+        return []
+    if arguments.learn_from:
+        return list(dict.fromkeys(arguments.learn_from))
+    previously_enabled = [
+        item["source"] for item in preference_sources(service) if item["enabled"]
+    ]
+    if previously_enabled:
+        return previously_enabled
+    if sys.stdin.isatty():
+        answer = input(
+            "Automatically learn research preferences from local Codex and Claude chats? "
+            "PaperTrail stores only derived signals, never raw conversations; the configured "
+            "reasoning provider processes bounded redacted turns. [y/N] "
+        )
+        if answer.strip().casefold() in {"y", "yes"}:
+            return ["codex", "claude"]
+    return []
+
+
+def _run_preferences(arguments: argparse.Namespace, service: PaperTrail) -> dict[str, Any] | list[dict[str, Any]]:
+    command = arguments.preferences_command
+    if command == "inspect":
+        return inspect_preferences(service)
+    if command == "sources":
+        return preference_sources(service)
+    if command == "enable":
+        return set_preference_source(service, arguments.source, True)
+    if command == "disable":
+        return set_preference_source(service, arguments.source, False)
+    if command == "forget":
+        return forget_preferences(service, arguments.source)
+    provider = provider_from_settings(service.settings)
+    if command == "rebuild":
+        reset = rebuild_preferences(service)
+        return {"reset": reset, "sync": sync_preferences(service, provider)}
+    if command == "sync":
+        return sync_preferences(service, provider)
+    raise ValueError(f"Unknown preferences command: {command}")
+
+
 def _run_daily(service: PaperTrail) -> dict[str, Any]:
     profile = load_profile(service.settings.home)
     daily = profile.get("daily")
     if not isinstance(daily, dict):
         raise RuntimeError("No daily profile is configured; run papertrail setup")
+    preference_config = profile.get("preferences", {})
+    ingestion_preferences = preference_config.get("ingestion", {})
+    try:
+        preference_sync = sync_preferences(
+            service, provider_from_settings(service.settings)
+        )
+    except (ValueError, RuntimeError, OSError, sqlite3.Error, json.JSONDecodeError) as error:
+        preference_sync = {
+            "status": "failed",
+            "error": error.__class__.__name__,
+            "message": str(error),
+            "profile": inspect_preferences(service)["profile"],
+        }
     today = date.today()
     to_date = today - timedelta(days=1)
     from_date = to_date - timedelta(days=int(daily.get("lookback_days", 3)) - 1)
@@ -628,12 +761,33 @@ def _run_daily(service: PaperTrail) -> dict[str, Any]:
         workers=int(daily.get("workers", 3)),
         enrichment=str(daily.get("enrichment", "full")),
         extraction_types=EXTRACTION_TYPES,
+        priority_config={
+            "personalized": bool(
+                ingestion_preferences.get(
+                    "personalized", daily.get("personalized_ingestion", True)
+                )
+            ),
+            "budget": int(
+                ingestion_preferences.get(
+                    "daily_enrichment_budget",
+                    daily.get("daily_enrichment_budget", 40),
+                )
+            ),
+            "preference_share": float(
+                ingestion_preferences.get("preference_share", 0.6)
+            ),
+            "frontier_share": float(ingestion_preferences.get("frontier_share", 0.2)),
+            "exploration_share": float(
+                ingestion_preferences.get("exploration_share", 0.2)
+            ),
+        },
     )
     if ingestion["status"] != "complete":
         return {
             "status": "partial",
             "window": {"from_date": from_date.isoformat(), "to_date": to_date.isoformat()},
             "ingestion": ingestion,
+            "preferences": preference_sync,
             "snapshot": None,
         }
     rolling_from = to_date - timedelta(days=int(daily.get("rolling_window_days", 365)) - 1)
@@ -695,6 +849,7 @@ def _run_daily(service: PaperTrail) -> dict[str, Any]:
         ),
         "window": {"from_date": from_date.isoformat(), "to_date": to_date.isoformat()},
         "ingestion": ingestion,
+        "preferences": preference_sync,
         "snapshot": snapshot,
         "organization": organization,
         "analysis": analysis,
@@ -758,6 +913,7 @@ def _run_arxiv_ingest(
     workers: int,
     enrichment: str,
     extraction_types: tuple[str, ...],
+    priority_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ingestor = ArxivBatchIngestor(service, progress=_progress)
     group = ingestor.discover_monthly(
@@ -768,9 +924,25 @@ def _run_arxiv_ingest(
             page_size=page_size,
         )
     )
+    prioritization = None
+    selected_discovery_ids = None
+    if priority_config is not None:
+        prioritization = prioritize_discoveries(
+            service,
+            provider_from_settings(service.settings),
+            group_id=group["id"],
+            budget=int(priority_config.get("budget", 40)),
+            primary_only=primary_only,
+            preference_share=float(priority_config.get("preference_share", 0.6)),
+            frontier_share=float(priority_config.get("frontier_share", 0.2)),
+            exploration_share=float(priority_config.get("exploration_share", 0.2)),
+            personalized=bool(priority_config.get("personalized", True)),
+        )
+        selected_discovery_ids = prioritization["selected_discovery_ids"]
     acquisition = ingestor.acquire_group(
         group["id"],
         limit=limit,
+        discovery_ids=selected_discovery_ids,
         retry_failed=retry_failed,
         primary_only=primary_only,
         min_free_gb=min_free_gb,
@@ -779,19 +951,30 @@ def _run_arxiv_ingest(
     acquired_paper_ids = acquisition.pop("acquired_paper_ids", [])
     new_paper_ids = list(dict.fromkeys(acquisition.pop("newly_acquired_paper_ids", [])))
     with sqlite3.connect(service.settings.database_path) as db:
+        selected_clause = ""
+        selected_params: list[Any] = []
+        if selected_discovery_ids is not None:
+            if selected_discovery_ids:
+                selected_clause = (
+                    f" AND d.id IN ({','.join('?' for _ in selected_discovery_ids)})"
+                )
+                selected_params.extend(selected_discovery_ids)
+            else:
+                selected_clause = " AND 0"
         paper_ids = [
             row[0]
             for row in db.execute(
-                """
+                f"""
                 SELECT DISTINCT d.paper_id
                 FROM ingestion_group_runs gr
                 JOIN discovery_records d ON d.run_id = gr.run_id
                 WHERE gr.group_id = ? AND d.status = 'acquired'
                   AND d.paper_id IS NOT NULL
                   AND (? = 0 OR d.primary_category = ?)
+                  {selected_clause}
                 ORDER BY d.published_date, d.source_id
                 """,
-                (group["id"], int(primary_only), category),
+                (group["id"], int(primary_only), category, *selected_params),
             )
         ]
     enrichment_results: list[dict[str, Any]] = []
@@ -847,6 +1030,7 @@ def _run_arxiv_ingest(
             "failed_total": acquisition["failed_count"],
             "visual_evidence_this_run": visual_count,
         },
+        "prioritization": prioritization,
         "enrichment": {
             "completed_this_run": len(enrichment_results),
             "eligible_papers": len(paper_ids),

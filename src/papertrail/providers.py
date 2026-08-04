@@ -66,7 +66,7 @@ class OllamaProvider:
         request = urllib.request.Request(
             f"{self.base_url}{path}",
             data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json", "User-Agent": "PaperTrailLocal/0.5"},
+            headers={"Content-Type": "application/json", "User-Agent": "PaperTrailLocal/0.10"},
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -147,7 +147,7 @@ class OpenAIProvider:
     def _headers(self) -> dict[str, str]:
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": "PaperTrailLocal/0.9",
+            "User-Agent": "PaperTrailLocal/0.10",
         }
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
