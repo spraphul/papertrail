@@ -134,10 +134,10 @@ the result is reproducible. The organization API returns each component, the fin
 to two concise reasons such as `Strong match for adaptive tool use`, `New this week`, or `Highly
 cited for its age`. These are recommendation explanations, not evidence claims.
 
-The already-approved group expansion remains unchanged: the Research Groups page initially shows
-eight ranked papers and lets the user select `View all N papers` or `Show less`. Expansion reveals
-the complete group in ranked order. The dashboard overview continues to show three ranked
-members.
+The Research Groups page initially shows eight ranked papers. `View all N papers` navigates to a
+dedicated `#/groups/{cluster_id}` page that renders the complete neighborhood in ranked order,
+without changing any other group card. Back navigation returns to the compact group overview.
+The dashboard overview continues to show three ranked members.
 
 ## Compact favourites library
 
@@ -227,7 +227,7 @@ Automated tests prove that:
 7. citation failures never fail ingestion or erase cached metadata;
 8. ranking weights, missing-component redistribution, age normalization, and tie-breaking are
    deterministic;
-9. all members remain present after ranking and `View all` reveals them in ranked order;
+9. all members remain present after ranking and `View all` opens their dedicated ranked route;
 10. favourites render collapsed, expand independently, and disappear when unstarred;
 11. `View paper` uses the internal reader and local artifact endpoint;
 12. `Open source` uses the canonical source URL and never substitutes for the reader;
@@ -235,7 +235,7 @@ Automated tests prove that:
 14. dashboard explanations contain no raw chat text or secrets.
 
 Browser verification uses the populated local corpus and confirms interest editing, immediate
-group reordering, group expansion, compact favourite expansion, local PDF reading, canonical
+group reordering, dedicated neighborhood navigation, compact favourite expansion, local PDF reading, canonical
 source navigation, keyboard focus, responsive layout, and absence of console errors.
 
 ## Deliberately deferred
@@ -245,4 +245,3 @@ source navigation, keyboard focus, responsive layout, and absence of console err
 - Per-group custom ranking weights.
 - LLM reranking on every page request.
 - Automatically changing configured arXiv categories from inferred interests.
-

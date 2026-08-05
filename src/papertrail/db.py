@@ -256,6 +256,42 @@ CREATE TABLE IF NOT EXISTS preference_profile_versions (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS explicit_interest_profile (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    text TEXT NOT NULL DEFAULT '',
+    extraction_status TEXT NOT NULL DEFAULT 'empty',
+    error_summary TEXT,
+    updated_at TEXT NOT NULL,
+    extracted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS paper_citation_metrics (
+    paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    provider_work_id TEXT,
+    citation_count INTEGER,
+    influential_citation_count INTEGER,
+    reference_count INTEGER,
+    match_method TEXT NOT NULL,
+    match_confidence REAL NOT NULL,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY(paper_id, provider)
+);
+
+CREATE INDEX IF NOT EXISTS paper_citation_metrics_fetched_idx
+ON paper_citation_metrics(provider, fetched_at);
+
+CREATE TABLE IF NOT EXISTS discovery_citation_metrics (
+    discovery_id TEXT NOT NULL REFERENCES discovery_records(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    provider_work_id TEXT,
+    citation_count INTEGER,
+    influential_citation_count INTEGER,
+    reference_count INTEGER,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY(discovery_id, provider)
+);
+
 CREATE TABLE IF NOT EXISTS paper_priority_scores (
     discovery_id TEXT NOT NULL REFERENCES discovery_records(id) ON DELETE CASCADE,
     profile_version_id TEXT NOT NULL REFERENCES preference_profile_versions(id),

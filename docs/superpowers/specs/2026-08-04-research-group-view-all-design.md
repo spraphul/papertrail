@@ -1,7 +1,12 @@
 # Research Group “View All” Interaction
 
 Date: 2026-08-04
-Status: Approved design
+Status: Superseded by dedicated neighborhood route
+
+> Follow-up usability testing showed that inline expansion made group state confusing. The
+> shipped design keeps eight-paper previews and routes `View all N papers` to
+> `#/groups/{cluster_id}`, where a dedicated page renders the complete ranked membership. The
+> inline expansion details below are retained as design history only.
 
 ## Problem
 

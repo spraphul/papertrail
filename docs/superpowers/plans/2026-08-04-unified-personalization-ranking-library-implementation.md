@@ -126,7 +126,8 @@ Files:
 
 Work:
 
-1. Preserve the already-implemented per-group `View all N papers` / `Show less` behavior.
+1. Keep eight-paper group previews and route `View all N papers` to a dedicated complete
+   neighborhood page keyed by `cluster_id`.
 2. Add the editable research-interest card with saved, saving, pending, error, and understood
    states. Re-fetch the profile and organization after save for immediate ranking.
 3. Render ranked group members with compact recommendation reasons and citation metadata where
@@ -135,7 +136,7 @@ Work:
 5. Add `#/paper/{paper_id}` and route all paper titles and `View paper` actions to it. Embed local
    PDFs, render text artifacts safely, and provide a missing-artifact state.
 6. Keep `Open source` as the only action that opens the canonical external page.
-7. Preserve responsive behavior, keyboard focus, expansion state, and favourite actions.
+7. Preserve responsive behavior, keyboard focus, dedicated-route navigation, and favourite actions.
 
 Gate: JavaScript syntax check plus browser verification on compact and desktop viewports.
 
@@ -165,10 +166,9 @@ Gate: README commands match CLI help and package metadata.
 1. Run Ruff, the complete test suite, JavaScript syntax validation, and package build.
 2. Launch the public code against a disposable test home, validate profile editing and ranking,
    and confirm citation failure cannot stop ingestion.
-3. Launch against the populated local corpus at port 8877, validate group expansion, compact
+3. Launch against the populated local corpus at port 8877, validate dedicated group routes, compact
    favourites, local PDF reading, and canonical arXiv source navigation.
 4. Capture updated dashboard, research-group, favourites, and reader screenshots for README
    examples where they improve onboarding.
 5. Review the final diff for private-provider names, credentials, local absolute paths, and
    accidental generated data before committing and pushing.
-

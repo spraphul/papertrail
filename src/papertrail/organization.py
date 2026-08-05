@@ -12,11 +12,13 @@ from typing import Any
 from .db import connect, transaction
 from .providers import IntelligenceProvider
 from .service import PaperTrail, stable_id, utc_now
+from .preferences import aggregate_profile
+from .ranking import rank_group_papers
 
 
-ALGORITHM_VERSION = "hybrid-llm-problem-taxonomy:v2"
+ALGORITHM_VERSION = "hybrid-llm-problem-taxonomy:v5"
 PROJECTION_DIMENSIONS = 96
-LLM_CLUSTER_BATCH_SIZE = 20
+LLM_CLUSTER_BATCH_SIZE = 40
 LLM_ABSTRACT_CHARACTERS = 1400
 LLM_RECORD_CHARACTERS = 300
 STOPWORDS = {
@@ -151,6 +153,7 @@ def latest_organization(service: PaperTrail) -> dict[str, Any] | None:
         if not run:
             return None
         groups = []
+        profile = aggregate_profile(service, persist=False)
         for cluster in db.execute(
             """
             SELECT * FROM paper_clusters WHERE organization_run_id = ?
@@ -158,14 +161,27 @@ def latest_organization(service: PaperTrail) -> dict[str, Any] | None:
             """,
             (run["id"],),
         ):
+            cluster_value = dict(cluster)
+            cluster_value["cluster_id"] = cluster_value.pop("id")
             members = [
                 {**dict(row), "authors": json.loads(row["authors_json"])}
                 for row in db.execute(
                     """
                     SELECT m.paper_id, m.similarity, m.is_new, m.position,
                            p.canonical_title AS title, p.abstract, p.authors_json,
-                           p.published_date, p.source_url
+                           p.published_date, p.source_url, c.citation_count,
+                           c.influential_citation_count, c.reference_count,
+                           c.fetched_at AS citation_fetched_at,
+                           (
+                               SELECT group_concat(s.statement, ' ')
+                               FROM scientific_records s
+                               WHERE s.paper_id = p.id AND s.record_type IN (
+                                   'contribution', 'method', 'empirical_result', 'limitation'
+                               )
+                           ) AS ranking_context
                     FROM paper_cluster_members m JOIN papers p ON p.id = m.paper_id
+                    LEFT JOIN paper_citation_metrics c ON c.paper_id = p.id
+                      AND c.provider = 'semantic_scholar'
                     WHERE m.cluster_id = ? ORDER BY m.position
                     """,
                     (cluster["id"],),
@@ -173,14 +189,17 @@ def latest_organization(service: PaperTrail) -> dict[str, Any] | None:
             ]
             groups.append(
                 {
-                    **dict(cluster),
+                    **cluster_value,
                     "top_terms": json.loads(cluster["top_terms_json"]),
-                    "papers": members,
+                    "papers": [
+                        {key: value for key, value in paper.items() if key != "ranking_context"}
+                        for paper in rank_group_papers(members, profile)
+                    ],
                 }
             )
     value = dict(run)
     value["configuration"] = json.loads(value.pop("configuration_json"))
-    return {**value, "groups": groups}
+    return {**value, "groups": groups, "profile_version_id": profile["profile_version_id"]}
 
 
 def _paper_features(
@@ -465,27 +484,21 @@ def _refine_clusters(
     if provider is None:
         return clusters, stats
     refined: list[Cluster] = []
-    for cluster in clusters:
-        if len(cluster.members) < 2:
-            refined.append(cluster)
-            continue
-        members = sorted(cluster.members, key=lambda item: (item[0].title, item[0].paper_id))
-        batches = [
-            members[index : index + LLM_CLUSTER_BATCH_SIZE]
-            for index in range(0, len(members), LLM_CLUSTER_BATCH_SIZE)
-        ]
-        for batch in batches:
-            stats["calls"] += 1
-            groups = _adjudicate_cluster(batch, provider)
-            if groups is None:
-                stats["fallback_clusters"] += 1
-                fallback = Cluster()
-                for paper, score in batch:
-                    fallback.add(paper, score)
-                refined.append(fallback)
-                continue
-            stats["refined_clusters"] += 1
-            refined.extend(groups)
+    # Seed clusters preserve a cheap semantic ordering, but the LLM sees the full
+    # capped day so it can merge across seed boundaries and reject forced neighbors.
+    members = [member for cluster in clusters for member in cluster.members]
+    batches = [
+        members[index : index + LLM_CLUSTER_BATCH_SIZE]
+        for index in range(0, len(members), LLM_CLUSTER_BATCH_SIZE)
+    ]
+    for batch in batches:
+        stats["calls"] += 1
+        groups = _adjudicate_cluster(batch, provider)
+        if groups is None:
+            stats["fallback_clusters"] += 1
+            return clusters, stats
+        stats["refined_clusters"] += 1
+        refined.extend(groups)
     return refined, stats
 
 
@@ -524,18 +537,25 @@ def _adjudicate_cluster(
     try:
         output = provider.structured(
             system=(
-                "You are building a precise scientific problem taxonomy. Group papers only when "
-                "they address the same concrete research problem and their objectives, evaluated "
-                "setting, or technical mechanism are meaningfully compatible. Shared broad topics, "
-                "model families, benchmark words, or generic methods are not enough. Use titles and "
-                "abstracts for scope and typed scientific records for contributions, assumptions, "
-                "results, and limitations. Prefer a singleton over a misleading group."
+                "You are building useful scientific research-program neighborhoods. Group papers "
+                "when they attack a shared concrete problem family, failure mode, or system objective "
+                "and match on at least two of: technical mechanism, failure mode, deployed artifact or "
+                "environment, and evaluation contract. Broad "
+                "topics, model-family names, benchmark words, or generic methods are not enough. Use "
+                "titles and abstracts for scope and typed scientific records for contributions, "
+                "assumptions, results, and limitations. Prefer coherent groups of 2-5 papers when "
+                "a researcher would benefit from comparing their approaches; use a singleton only "
+                "when no defensible shared problem neighborhood exists in this batch."
             ),
             prompt=(
                 "Partition every paper below exactly once. Do not invent, omit, or duplicate IDs. "
-                "A group needs a defensible shared problem; put a paper alone when the relationship "
-                "is merely topical or uncertain. Titles must be specific 2-9 word research-problem "
+                "A group needs a defensible shared problem family and its description must name the "
+                "meaningful differences between members; put a paper alone when the relationship is "
+                "merely topical or uncertain. Aim for 2-5 papers per group where evidence supports it, "
+                "rather than mechanically producing one group per paper. Titles must be specific 2-9 word research-problem "
                 "labels. Descriptions must state both the inclusion rule and why the members belong. "
+                "Never use placeholder words such as singleton, miscellaneous, other, or specific in a "
+                "title; a one-paper group's title must still name its concrete research problem. "
                 "membership_confidence is 0 to 1 for the weakest member in that group.\n\n"
                 + json.dumps({"papers": dossiers}, indent=2)
             ),

@@ -639,10 +639,14 @@ class PaperTrail:
             if snapshot:
                 row = db.execute(
                     """
-                    SELECT p.*, v.id AS document_version, v.content_hash, v.artifact_uri
+                    SELECT p.*, v.id AS document_version, v.content_hash, v.artifact_uri,
+                           c.citation_count, c.influential_citation_count, c.reference_count,
+                           c.fetched_at AS citation_fetched_at
                     FROM papers p
                     JOIN snapshot_papers sp ON sp.paper_id = p.id AND sp.snapshot_id = ?
                     JOIN paper_versions v ON v.id = sp.paper_version_id
+                    LEFT JOIN paper_citation_metrics c ON c.paper_id = p.id
+                      AND c.provider = 'semantic_scholar'
                     WHERE p.id = ?
                     """,
                     (snapshot["id"], paper_id),
@@ -650,8 +654,12 @@ class PaperTrail:
             else:
                 row = db.execute(
                     """
-                    SELECT p.*, v.id AS document_version, v.content_hash, v.artifact_uri
+                    SELECT p.*, v.id AS document_version, v.content_hash, v.artifact_uri,
+                           c.citation_count, c.influential_citation_count, c.reference_count,
+                           c.fetched_at AS citation_fetched_at
                     FROM papers p JOIN paper_versions v ON v.paper_id = p.id AND v.is_current = 1
+                    LEFT JOIN paper_citation_metrics c ON c.paper_id = p.id
+                      AND c.provider = 'semantic_scholar'
                     WHERE p.id = ?
                     """,
                     (paper_id,),
@@ -659,6 +667,9 @@ class PaperTrail:
             if not row:
                 raise KeyError(f"Unknown paper: {paper_id}")
             result = dict(row)
+            artifact_uri = str(result.get("artifact_uri") or "")
+            result["artifact_available"] = bool(artifact_uri)
+            result["artifact_kind"] = "pdf" if artifact_uri.casefold().endswith(".pdf") else "text"
             result["authors"] = json.loads(result.pop("authors_json"))
             result["favorite"] = bool(
                 db.execute(
@@ -721,10 +732,14 @@ class PaperTrail:
                 SELECT p.id AS paper_id, p.canonical_title AS title, p.abstract,
                        p.authors_json, p.published_date, p.source_url, p.source_class,
                        f.created_at AS favorited_at,
-                       CASE WHEN v.id IS NULL THEN 0 ELSE 1 END AS artifact_available
+                       CASE WHEN v.id IS NULL THEN 0 ELSE 1 END AS artifact_available,
+                       c.citation_count, c.influential_citation_count, c.reference_count,
+                       c.fetched_at AS citation_fetched_at
                 FROM paper_favorites f
                 JOIN papers p ON p.id = f.paper_id
                 LEFT JOIN paper_versions v ON v.paper_id = p.id AND v.is_current = 1
+                LEFT JOIN paper_citation_metrics c ON c.paper_id = p.id
+                  AND c.provider = 'semantic_scholar'
                 ORDER BY f.created_at DESC, p.canonical_title
                 """
             ).fetchall()
@@ -735,6 +750,18 @@ class PaperTrail:
             item["artifact_available"] = bool(item["artifact_available"])
             item["favorite"] = True
             favorites.append(item)
+        if favorites:
+            from .preferences import aggregate_profile
+            from .ranking import rank_group_papers
+
+            profile = aggregate_profile(self, persist=False)
+            ranked = rank_group_papers(
+                [{**item, "similarity": 0.0, "is_new": False} for item in favorites],
+                profile,
+            )
+            by_id = {item["paper_id"]: item["ranking"] for item in ranked}
+            for item in favorites:
+                item["ranking"] = by_id[item["paper_id"]]
         return {"favorites": favorites, "count": len(favorites)}
 
     def get_evidence(self, evidence_ids: list[str]) -> dict[str, Any]:

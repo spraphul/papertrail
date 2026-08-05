@@ -1,5 +1,8 @@
 # Research Group “View All” Implementation Plan
 
+Status: Superseded by the dedicated `#/groups/{cluster_id}` route documented in the unified
+personalization implementation.
+
 1. Add stable client-side expansion state keyed by `cluster_id` in
    `src/papertrail/web/app.js`.
 2. Extend `groupCard` with an opt-in expandable mode while preserving the three-paper dashboard

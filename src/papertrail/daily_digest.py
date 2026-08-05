@@ -686,7 +686,11 @@ For each selection, inspect the exact paper, scientific records, supporting evid
 related prior work, and available figures. Write a standalone 900-1500 word Markdown deep dive.
 Distinguish source claims from your synthesis. Cite exact evidence IDs inline as [ev_...]. Do not
 claim global novelty. Include only figure IDs returned by PaperTrail and discuss what each chosen
-figure actually shows. Do not write files or use shell tools.
+figure actually shows. For each blog, both its evidence_ids array and every inline [ev_...] citation
+must belong to that blog's selected paper_id; never place evidence from a related paper in the
+selected paper's evidence_ids. Mention related papers by title or related_paper_ids, but keep their
+evidence out of the selected-paper deep dive. Apply the same selected-paper-only rule to figure_ids.
+Do not write files or use shell tools.
 
 Return only the requested JSON. Candidate papers:
 {json.dumps(compact, separators=(',', ':'))}

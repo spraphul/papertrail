@@ -43,7 +43,31 @@ PREFERENCE_SCHEMA: dict[str, Any] = {
     "required": ["events"],
 }
 
+RELEVANCE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "scores": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "discovery_id": {"type": "string"},
+                    "relevance": {"type": "number"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["discovery_id", "relevance", "reason"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["scores"],
+    "additionalProperties": False,
+}
+
 ALLOWED_SOURCES = {"codex", "claude"}
+EXPLICIT_SOURCE = "dashboard_explicit"
+EXPLICIT_SESSION = "dashboard_explicit_current"
+MAX_EXPLICIT_INTEREST_LENGTH = 12_000
 ALLOWED_KINDS = {"topic", "problem", "method", "artifact", "positive", "negative"}
 ALLOWED_EXPLICITNESS = {"explicit", "inferred"}
 RESEARCH_HINTS = re.compile(
@@ -63,6 +87,11 @@ SECRET_PATTERNS = (
 )
 TOKEN_RE = re.compile(r"[a-z][a-z0-9-]{2,}", re.IGNORECASE)
 STOPWORDS = {
+    "across",
+    "active",
+    "all",
+    "and",
+    "are",
     "about",
     "after",
     "again",
@@ -71,15 +100,22 @@ STOPWORDS = {
     "been",
     "being",
     "build",
+    "both",
+    "can",
     "could",
     "from",
+    "for",
     "have",
+    "how",
     "into",
+    "introduce",
+    "its",
     "more",
     "paper",
     "papers",
     "research",
     "should",
+    "some",
     "that",
     "their",
     "there",
@@ -87,6 +123,7 @@ STOPWORDS = {
     "this",
     "those",
     "using",
+    "use",
     "want",
     "what",
     "when",
@@ -167,6 +204,7 @@ def preference_sources(service: PaperTrail) -> list[dict[str, Any]]:
             FROM preference_sources s
             LEFT JOIN preference_sessions x ON x.source = s.source
             LEFT JOIN preference_events e ON e.session_fingerprint = x.fingerprint
+            WHERE s.source IN ('codex', 'claude')
             GROUP BY s.source ORDER BY s.source
             """
         ).fetchall()
@@ -247,6 +285,153 @@ def rebuild_preferences(service: PaperTrail) -> dict[str, Any]:
     return {"status": "ready_for_rebuild", "sources": enabled, "deleted_events": deleted}
 
 
+def explicit_interests(service: PaperTrail) -> dict[str, Any]:
+    """Return the exact user-authored interest note and its extraction state."""
+    service.initialize()
+    with closing(connect(service.settings.database_path)) as db:
+        row = db.execute(
+            "SELECT * FROM explicit_interest_profile WHERE singleton = 1"
+        ).fetchone()
+    if not row:
+        return {
+            "text": "",
+            "extraction_status": "empty",
+            "error_summary": None,
+            "updated_at": None,
+            "extracted_at": None,
+        }
+    return dict(row)
+
+
+def replace_explicit_interests(
+    service: PaperTrail,
+    text: str,
+    provider: IntelligenceProvider | None,
+) -> dict[str, Any]:
+    """Replace the dashboard-authored profile and rebuild its derived events."""
+    if not isinstance(text, str):
+        raise ValueError("interest text must be a string")
+    normalized = text.strip()
+    if len(normalized) > MAX_EXPLICIT_INTEREST_LENGTH:
+        raise ValueError(
+            f"interest text must be at most {MAX_EXPLICIT_INTEREST_LENGTH} characters"
+        )
+    service.initialize()
+    now = utc_now()
+    _ensure_explicit_source(service, now)
+    if not normalized:
+        with transaction(service.settings.database_path) as db:
+            db.execute("DELETE FROM preference_sessions WHERE source = ?", (EXPLICIT_SOURCE,))
+            db.execute(
+                """
+                INSERT INTO explicit_interest_profile (
+                    singleton, text, extraction_status, error_summary, updated_at, extracted_at
+                ) VALUES (1, '', 'empty', NULL, ?, NULL)
+                ON CONFLICT(singleton) DO UPDATE SET text = '', extraction_status = 'empty',
+                    error_summary = NULL, updated_at = excluded.updated_at, extracted_at = NULL
+                """,
+                (now,),
+            )
+        return {"explicit": explicit_interests(service), "profile": aggregate_profile(service, persist=True)}
+
+    with transaction(service.settings.database_path) as db:
+        db.execute(
+            """
+            INSERT INTO explicit_interest_profile (
+                singleton, text, extraction_status, error_summary, updated_at, extracted_at
+            ) VALUES (1, ?, 'processing', NULL, ?, NULL)
+            ON CONFLICT(singleton) DO UPDATE SET text = excluded.text,
+                extraction_status = 'processing', error_summary = NULL,
+                updated_at = excluded.updated_at, extracted_at = NULL
+            """,
+            (normalized, now),
+        )
+    status = "ready"
+    error_summary = None
+    try:
+        if provider is None:
+            raise RuntimeError("Reasoning provider is not configured")
+        events = _extract_events(provider, [normalized], now)
+        for event in events:
+            event["explicitness"] = "explicit"
+        if not events:
+            events = _lexical_explicit_events(normalized, now)
+    except (RuntimeError, ValueError, IndexError, KeyError) as error:
+        events = _lexical_explicit_events(normalized, now)
+        status = "pending"
+        error_summary = str(error)[:240]
+    session = HistorySession(
+        EXPLICIT_SOURCE,
+        service.settings.home / "explicit-interests",
+        EXPLICIT_SESSION,
+        hashlib.sha256(normalized.encode()).hexdigest(),
+        now,
+    )
+    _replace_session_events(service, session, events)
+    with transaction(service.settings.database_path) as db:
+        db.execute(
+            """
+            UPDATE explicit_interest_profile SET extraction_status = ?, error_summary = ?,
+                extracted_at = ? WHERE singleton = 1
+            """,
+            (status, error_summary, now if status == "ready" else None),
+        )
+    return {"explicit": explicit_interests(service), "profile": aggregate_profile(service, persist=True)}
+
+
+def retry_explicit_interests(
+    service: PaperTrail, provider: IntelligenceProvider
+) -> dict[str, Any] | None:
+    current = explicit_interests(service)
+    if current["extraction_status"] != "pending" or not current["text"]:
+        return None
+    return replace_explicit_interests(service, current["text"], provider)
+
+
+def _ensure_explicit_source(service: PaperTrail, now: str) -> None:
+    with transaction(service.settings.database_path) as db:
+        db.execute(
+            """
+            INSERT INTO preference_sources (source, enabled, consented_at, status)
+            VALUES (?, 1, ?, 'ready')
+            ON CONFLICT(source) DO UPDATE SET enabled = 1, status = 'ready'
+            """,
+            (EXPLICIT_SOURCE, now),
+        )
+
+
+def _lexical_explicit_events(text: str, observed_at: str) -> list[dict[str, Any]]:
+    parts = [" ".join(part.split()) for part in re.split(r"[\n.;]+", text) if part.strip()]
+    events: list[dict[str, Any]] = []
+    for part in parts[:12]:
+        negative = bool(
+            re.search(
+                r"\b(avoid|de-emphasize|deemphasize|less of|not interested|exclude)\b",
+                part,
+                re.IGNORECASE,
+            )
+        )
+        label = re.sub(
+            r"^(?:i\s+(?:care about|am interested in|want|prefer)|please|focus on)\s+",
+            "",
+            part,
+            flags=re.IGNORECASE,
+        ).strip(" :-")[:160]
+        if len(label) < 3:
+            continue
+        events.append(
+            {
+                "kind": "negative" if negative else "positive",
+                "label": label,
+                "context": "Explicit dashboard research-interest note.",
+                "confidence": 1.0,
+                "explicitness": "explicit",
+                "observed_at": observed_at,
+            }
+        )
+    return events
+
+
 def sync_preferences(
     service: PaperTrail,
     provider: IntelligenceProvider,
@@ -262,7 +447,9 @@ def sync_preferences(
         "unchanged_sessions": 0,
         "accepted_events": 0,
         "failed_sessions": 0,
+        "explicit": None,
     }
+    result["explicit"] = retry_explicit_interests(service, provider)
     for source_config in sources:
         source = source_config["source"]
         source_result = _sync_source(
@@ -597,10 +784,14 @@ def aggregate_profile(service: PaperTrail, *, persist: bool = False) -> dict[str
             ORDER BY f.created_at DESC
             """
         ).fetchall()
+        explicit_note = db.execute(
+            "SELECT text, extraction_status FROM explicit_interest_profile WHERE singleton = 1"
+        ).fetchone()
     weights: dict[str, float] = defaultdict(float)
     labels: dict[str, str] = {}
     negative: dict[str, float] = defaultdict(float)
     explicit_count = 0
+    dashboard_explicit_keys: set[str] = set()
     session_ids: set[str] = set()
     now = datetime.now(timezone.utc)
     for event in events:
@@ -609,7 +800,11 @@ def aggregate_profile(service: PaperTrail, *, persist: bool = False) -> dict[str
         observed = _parse_datetime(event["observed_at"])
         age_days = max(0.0, (now - observed).total_seconds() / 86400.0)
         decay = 0.5 ** (age_days / 180.0)
-        authority = 1.0 if event["explicitness"] == "explicit" else 0.65
+        if event["source"] == EXPLICIT_SOURCE:
+            authority = 2.5
+            dashboard_explicit_keys.add(label_key)
+        else:
+            authority = 1.0 if event["explicitness"] == "explicit" else 0.65
         score = float(event["confidence"]) * authority * decay
         if event["kind"] == "negative":
             negative[label_key] += score
@@ -619,7 +814,7 @@ def aggregate_profile(service: PaperTrail, *, persist: bool = False) -> dict[str
             explicit_count += 1
         session_ids.add(event["session_fingerprint"])
     for favorite in favorites:
-        for token in _tokens(f"{favorite['canonical_title']} {favorite['abstract']}"):
+        for token in set(_tokens(f"{favorite['canonical_title']} {favorite['abstract']}")):
             labels.setdefault(token, token)
             weights[token] += 1.5
     concepts = []
@@ -631,10 +826,18 @@ def aggregate_profile(service: PaperTrail, *, persist: bool = False) -> dict[str
                     "label": labels.get(key, key),
                     "weight": round(net, 4),
                     "polarity": "negative" if net < 0 else "positive",
+                    "source": "explicit" if key in dashboard_explicit_keys else "learned",
                 }
             )
-    concepts.sort(key=lambda item: (-abs(item["weight"]), item["label"].casefold()))
-    active_for_ingestion = len(favorites) >= 3 or (
+    concepts.sort(
+        key=lambda item: (
+            item["source"] != "explicit",
+            -abs(item["weight"]),
+            item["label"].casefold(),
+        )
+    )
+    has_explicit_note = bool(explicit_note and explicit_note["text"].strip())
+    active_for_ingestion = has_explicit_note or len(favorites) >= 3 or (
         len(events) >= 8 and len(session_ids) >= 3 and explicit_count >= 1
     )
     active = bool(favorites or events)
@@ -645,6 +848,10 @@ def aggregate_profile(service: PaperTrail, *, persist: bool = False) -> dict[str
         "event_count": len(events),
         "session_count": len(session_ids),
         "explicit_event_count": explicit_count,
+        "explicit_note_active": has_explicit_note,
+        "explicit_extraction_status": (
+            explicit_note["extraction_status"] if explicit_note else "empty"
+        ),
         "concepts": concepts[:30],
         "positive_labels": [
             item["label"] for item in concepts if item["polarity"] == "positive"
@@ -668,6 +875,7 @@ def aggregate_profile(service: PaperTrail, *, persist: bool = False) -> dict[str
 def inspect_preferences(service: PaperTrail) -> dict[str, Any]:
     return {
         "profile": aggregate_profile(service, persist=False),
+        "explicit": explicit_interests(service),
         "sources": preference_sources(service),
         "privacy": {
             "raw_conversations_stored": False,
@@ -700,9 +908,13 @@ def prioritize_discoveries(
             dict(row)
             for row in db.execute(
                 f"""
-                SELECT d.* FROM discovery_records d
+                SELECT d.*, c.citation_count, c.influential_citation_count,
+                       c.fetched_at AS citation_fetched_at
+                FROM discovery_records d
                 JOIN ingestion_group_runs gr ON gr.run_id = d.run_id
                 JOIN ingestion_groups g ON g.id = gr.group_id
+                LEFT JOIN discovery_citation_metrics c ON c.discovery_id = d.id
+                  AND c.provider = 'semantic_scholar'
                 WHERE gr.group_id = ? AND d.status IN ('discovered', 'failed')
                 {category_filter}
                 ORDER BY d.published_date DESC, d.source_id
@@ -719,6 +931,7 @@ def prioritize_discoveries(
             "budget": budget,
         }
     positive_labels = profile["positive_labels"] if personalized else []
+    active = bool(personalized and profile["active_for_ingestion"])
     profile_tokens = set(_tokens(" ".join(positive_labels)))
     texts = [f"{item['title']}\n{item['abstract']}" for item in records]
     semantic: list[float | None] = [None] * len(records)
@@ -732,37 +945,87 @@ def prioritize_discoveries(
                 semantic = [max(0.0, _cosine(profile_vector, vector)) for vector in vectors]
         except (RuntimeError, ValueError, IndexError):
             semantic = [None] * len(records)
+    llm_relevance = (
+        _llm_relevance_scores(provider, records, profile) if active else {}
+    )
     document_tokens = [set(_tokens(text)) for text in texts]
     frequencies = Counter(token for tokens in document_tokens for token in tokens)
+    today = datetime.now(timezone.utc).date()
+    citation_raw: list[float | None] = []
+    recency_scores: list[float] = []
+    for record in records:
+        try:
+            age_days = max(
+                0,
+                (today - datetime.fromisoformat(str(record["published_date"])[:10]).date()).days,
+            )
+        except (TypeError, ValueError):
+            age_days = 180
+        recency_scores.append(2 ** (-age_days / 180.0))
+        citation_raw.append(
+            math.log1p(int(record["citation_count"])) / math.sqrt(max(30, age_days))
+            if record.get("citation_count") is not None and age_days >= 14
+            else 0.5 if record.get("citation_count") is not None else None
+        )
+    measured = sorted(value for value in citation_raw if value is not None)
+    citation_scores = [
+        (
+            (sum(other < value for other in measured) + 0.5 * sum(other == value for other in measured))
+            / len(measured)
+        )
+        if value is not None and measured
+        else None
+        for value in citation_raw
+    ]
     scored: list[dict[str, Any]] = []
     for index, (record, tokens) in enumerate(zip(records, document_tokens, strict=True)):
         overlap = sorted(profile_tokens & tokens)
         lexical = len(overlap) / max(1.0, math.sqrt(len(profile_tokens) * len(tokens)))
-        affinity = (
+        embedding_affinity = (
             0.8 * float(semantic[index]) + 0.2 * lexical
             if semantic[index] is not None
             else lexical
+        )
+        llm_signal = llm_relevance.get(record["id"])
+        affinity = (
+            0.45 * embedding_affinity + 0.55 * llm_signal["score"]
+            if llm_signal is not None
+            else embedding_affinity
         )
         topical = [frequencies[token] for token in tokens if frequencies[token] > 1]
         trend = min(1.0, (sum(topical) / max(1, len(tokens))) / 4.0)
         rarity = sum(1.0 / frequencies[token] for token in tokens) / max(1, len(tokens))
         quality = min(1.0, len(record["abstract"]) / 1200.0)
-        frontier = 0.45 * trend + 0.35 * rarity + 0.2 * quality
+        recency = recency_scores[index]
+        citation = citation_scores[index]
+        citation_or_neutral = citation if citation is not None else 0.5
+        relevance = 0.60 * affinity + 0.25 * recency + 0.15 * citation_or_neutral
+        frontier = (
+            0.35 * trend
+            + 0.25 * rarity
+            + 0.15 * quality
+            + 0.15 * recency
+            + 0.10 * citation_or_neutral
+        )
         jitter = int(hashlib.sha256(record["id"].encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
         exploration = (1.0 - affinity) * (0.8 + 0.2 * jitter)
         scored.append(
             {
                 "record": record,
                 "affinity": round(affinity, 6),
+                "llm_relevance": round(llm_signal["score"], 6) if llm_signal else None,
+                "llm_reason": llm_signal["reason"] if llm_signal else None,
+                "relevance": round(relevance, 6),
                 "frontier": round(frontier, 6),
                 "exploration": round(exploration, 6),
+                "recency": round(recency, 6),
+                "citation": round(citation, 6) if citation is not None else None,
                 "matches": overlap[:6],
             }
         )
     selected: list[tuple[dict[str, Any], str]] = []
     chosen: set[str] = set()
     target = len(scored) if budget == 0 else min(budget, len(scored))
-    active = bool(personalized and profile["active_for_ingestion"])
     preference_count = round(target * preference_share)
     frontier_count = round(target * frontier_share)
     exploration_count = target - preference_count - frontier_count
@@ -785,7 +1048,7 @@ def prioritize_discoveries(
             if sum(1 for _, selected_lane in selected if selected_lane == lane) >= count:
                 break
 
-    take(sorted(scored, key=lambda item: (-item["affinity"], item["record"]["id"])), preference_count, "preference")
+    take(sorted(scored, key=lambda item: (-item["relevance"], item["record"]["id"])), preference_count, "preference")
     take(sorted(scored, key=lambda item: (-item["frontier"], item["record"]["id"])), frontier_count, "frontier")
     take(sorted(scored, key=lambda item: (-item["exploration"], item["record"]["id"])), exploration_count, "exploration")
     if len(selected) < target:
@@ -793,7 +1056,7 @@ def prioritize_discoveries(
             sorted(
                 scored,
                 key=lambda item: (
-                    -max(item["affinity"], item["frontier"], item["exploration"]),
+                    -max(item["relevance"], item["frontier"], item["exploration"]),
                     item["record"]["id"],
                 ),
             ),
@@ -808,7 +1071,8 @@ def prioritize_discoveries(
             lane = selected_lanes.get(discovery_id, "deferred")
             matches = item["matches"]
             explanation = (
-                f"Matches {', '.join(matches)}" if lane == "preference" and matches
+                item["llm_reason"] if lane == "preference" and item["llm_reason"]
+                else f"Matches {', '.join(matches)}" if lane == "preference" and matches
                 else "Trending or unusually novel within today's paper surplus"
                 if lane == "frontier"
                 else "Deliberately broadens the current research profile"
@@ -817,7 +1081,7 @@ def prioritize_discoveries(
                 if lane == "deferred"
                 else "Selected by broad editorial ranking"
             )
-            final_score = max(item["affinity"], item["frontier"], item["exploration"])
+            final_score = max(item["relevance"], item["frontier"], item["exploration"])
             db.execute(
                 """
                 INSERT OR REPLACE INTO paper_priority_scores VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -841,7 +1105,64 @@ def prioritize_discoveries(
         "lane_counts": dict(lane_counts),
         "candidate_count": len(records),
         "budget": budget,
+        "llm_relevance_count": len(llm_relevance),
     }
+
+
+def _llm_relevance_scores(
+    provider: IntelligenceProvider,
+    records: list[dict[str, Any]],
+    profile: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    scores: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(records), 20):
+        batch = records[start : start + 20]
+        payload = {
+            "research_profile": {
+                "positive": profile.get("positive_labels", []),
+                "negative": profile.get("negative_labels", []),
+            },
+            "papers": [
+                {
+                    "discovery_id": item["id"],
+                    "title": item["title"],
+                    "abstract": " ".join(str(item["abstract"]).split())[:1800],
+                }
+                for item in batch
+            ],
+        }
+        try:
+            output = provider.structured(
+                system=(
+                    "Score how relevant each paper is to the user's research intent from 0 to 1. "
+                    "Judge alignment of the problem, mechanism, assumptions, and evaluation style; "
+                    "do not rely on keyword overlap or citation popularity. Return every discovery "
+                    "ID exactly once with a concise non-sensitive reason."
+                ),
+                prompt=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                schema=RELEVANCE_SCHEMA,
+            )
+        except (RuntimeError, ValueError, KeyError, IndexError):
+            continue
+        raw = output.get("scores")
+        if not isinstance(raw, list):
+            continue
+        expected = {item["id"] for item in batch}
+        accepted: dict[str, dict[str, Any]] = {}
+        for item in raw:
+            if not isinstance(item, dict) or item.get("discovery_id") not in expected:
+                continue
+            value = item.get("relevance")
+            reason = " ".join(str(item.get("reason", "")).split())[:240]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not reason:
+                continue
+            accepted[str(item["discovery_id"])] = {
+                "score": max(0.0, min(1.0, float(value))),
+                "reason": reason,
+            }
+        if set(accepted) == expected:
+            scores.update(accepted)
+    return scores
 
 
 def _tokens(text: str) -> list[str]:

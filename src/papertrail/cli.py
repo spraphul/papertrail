@@ -17,16 +17,19 @@ from .api import serve
 from .arxiv import import_paper
 from .arxiv_batch import ArxivBatchConfig, ArxivBatchIngestor
 from .config import settings
+from .citations import refresh_citations, refresh_discovery_citations
 from .daily_digest import generate_daily_digest
 from .mcp import run as run_mcp
 from .organization import organize_snapshot
 from .preferences import (
+    aggregate_profile,
     configure_preference_sources,
     forget_preferences,
     inspect_preferences,
     preference_sources,
     prioritize_discoveries,
     rebuild_preferences,
+    replace_explicit_interests,
     set_preference_source,
     sync_preferences,
 )
@@ -44,10 +47,10 @@ def _add_daily_setup_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--rolling-window-days", type=int, default=365)
     command.add_argument("--workers", type=int, default=3)
     command.add_argument(
-        "--embedding-provider", choices=("ollama", "openai"), default="ollama"
+        "--embedding-provider", choices=("ollama", "openai", "aifactory"), default="ollama"
     )
     command.add_argument(
-        "--reasoning-provider", choices=("ollama", "openai"), default="ollama"
+        "--reasoning-provider", choices=("ollama", "openai", "aifactory"), default="ollama"
     )
     command.add_argument("--embedding-model")
     command.add_argument("--reasoning-model")
@@ -60,6 +63,18 @@ def _add_daily_setup_arguments(command: argparse.ArgumentParser) -> None:
         "--openai-api-key-file",
         type=Path,
         help="path to a private API-key file for MCP, dashboard, or scheduled runs",
+    )
+    command.add_argument(
+        "--aifactory-base-url",
+        default=os.environ.get(
+            "AIFACTORY_BASE_URL",
+            "http://aifactory-healthai.digitalassistant.oci.oraclecloud.com:3000",
+        ),
+        help="AI Factory development endpoint",
+    )
+    command.add_argument(
+        "--aifactory-api-version",
+        default=os.environ.get("AIFACTORY_API_VERSION", "2024-10-21"),
     )
     command.add_argument("--client", choices=("codex", "claude"), action="append")
     command.add_argument(
@@ -85,6 +100,16 @@ def _add_daily_setup_arguments(command: argparse.ArgumentParser) -> None:
         "--no-chat-learning",
         action="store_true",
         help="do not read Codex or Claude chat histories",
+    )
+    interests = command.add_mutually_exclusive_group()
+    interests.add_argument(
+        "--interests",
+        help="natural-language research interests to apply immediately",
+    )
+    interests.add_argument(
+        "--interests-file",
+        type=Path,
+        help="UTF-8 text or Markdown file containing research interests",
     )
     command.add_argument(
         "--daily-enrichment-budget",
@@ -130,7 +155,14 @@ def parser() -> argparse.ArgumentParser:
     )
     _add_daily_setup_arguments(setup)
 
-    commands.add_parser("daily", help="ingest the configured daily surplus and refresh the snapshot")
+    daily_command = commands.add_parser(
+        "daily", help="ingest the configured daily surplus and refresh the snapshot"
+    )
+    daily_command.add_argument(
+        "--date",
+        type=date.fromisoformat,
+        help="ingest exactly this arXiv publication date (YYYY-MM-DD), including today",
+    )
     preferences = commands.add_parser(
         "preferences", help="inspect and control the local adaptive research profile"
     )
@@ -355,7 +387,7 @@ def main(argv: list[str] | None = None) -> None:
         elif arguments.command == "setup":
             value = _setup_local(arguments, service)
         elif arguments.command == "daily":
-            value = _run_daily(service)
+            value = _run_daily(service, target_date=arguments.date)
         elif arguments.command == "preferences":
             value = _run_preferences(arguments, service)
         elif arguments.command == "organize":
@@ -555,12 +587,14 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
         raise ValueError("cluster-threshold must be between 0 and 1")
 
     embedding_model = arguments.embedding_model or (
-        "text-embedding-3-small"
-        if arguments.embedding_provider == "openai"
-        else "embeddinggemma"
+        "text-embedding-3-small" if arguments.embedding_provider == "openai" else
+        "oracle-text-embedding-3-small" if arguments.embedding_provider == "aifactory" else
+        "embeddinggemma"
     )
     reasoning_model = arguments.reasoning_model or (
-        "gpt-5.6" if arguments.reasoning_provider == "openai" else "qwen2.5:7b"
+        "gpt-5.6" if arguments.reasoning_provider == "openai" else
+        "gpt-5.4-2026-03-05" if arguments.reasoning_provider == "aifactory" else
+        "qwen2.5:7b"
     )
     uses_openai = "openai" in {
         arguments.embedding_provider,
@@ -583,6 +617,18 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
             "Scheduled OpenAI runs require --openai-api-key-file because launchd does not "
             "load shell environment variables; use --no-schedule for environment-only use"
         )
+    uses_aifactory = "aifactory" in {
+        arguments.embedding_provider,
+        arguments.reasoning_provider,
+    }
+    if uses_aifactory and not os.environ.get("AIFACTORY_BEARER_TOKEN"):
+        raise RuntimeError(
+            "AI Factory development runs require AIFACTORY_BEARER_TOKEN in the environment"
+        )
+    if uses_aifactory and not arguments.no_schedule:
+        raise RuntimeError(
+            "AI Factory bearer tokens are short-lived development credentials; use --no-schedule"
+        )
 
     learning_sources = _learning_sources(arguments, service)
     profile = {
@@ -594,6 +640,8 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
             "reasoning_model": reasoning_model,
             "openai_base_url": arguments.openai_base_url.rstrip("/"),
             "openai_api_key_file": openai_key_file,
+            "aifactory_base_url": arguments.aifactory_base_url.rstrip("/"),
+            "aifactory_api_version": arguments.aifactory_api_version,
         },
         "daily": {
             "category": arguments.category,
@@ -636,6 +684,19 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
     preference_source_status = configure_preference_sources(
         configured_service, learning_sources
     )
+    interest_text = arguments.interests
+    if arguments.interests_file:
+        interest_path = arguments.interests_file.expanduser().resolve()
+        if not interest_path.is_file():
+            raise ValueError("--interests-file must point to a readable text or Markdown file")
+        interest_text = interest_path.read_text(encoding="utf-8")
+    explicit_profile = None
+    if interest_text is not None:
+        explicit_profile = replace_explicit_interests(
+            configured_service,
+            interest_text,
+            provider_from_settings(configured_service.settings),
+        )
 
     clients = arguments.client or ["codex", "claude"]
     connections = [
@@ -668,12 +729,16 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
             "embedding_model": embedding_model,
             "reasoning_model": reasoning_model,
             "openai_base_url": arguments.openai_base_url.rstrip("/") if uses_openai else None,
+            "aifactory_base_url": (
+                arguments.aifactory_base_url.rstrip("/") if uses_aifactory else None
+            ),
             "credential": "key-file" if openai_key_file else "environment",
         },
         "daily": profile["daily"],
         "preferences": {
             "automatic": bool(learning_sources),
             "sources": preference_source_status,
+            "explicit": explicit_profile["explicit"] if explicit_profile else None,
             "raw_conversations_stored": False,
         },
         "schedule": schedule,
@@ -727,7 +792,7 @@ def _run_preferences(arguments: argparse.Namespace, service: PaperTrail) -> dict
     raise ValueError(f"Unknown preferences command: {command}")
 
 
-def _run_daily(service: PaperTrail) -> dict[str, Any]:
+def _run_daily(service: PaperTrail, *, target_date: date | None = None) -> dict[str, Any]:
     profile = load_profile(service.settings.home)
     daily = profile.get("daily")
     if not isinstance(daily, dict):
@@ -746,8 +811,12 @@ def _run_daily(service: PaperTrail) -> dict[str, Any]:
             "profile": inspect_preferences(service)["profile"],
         }
     today = date.today()
-    to_date = today - timedelta(days=1)
-    from_date = to_date - timedelta(days=int(daily.get("lookback_days", 3)) - 1)
+    to_date = target_date or today - timedelta(days=1)
+    from_date = (
+        to_date
+        if target_date is not None
+        else to_date - timedelta(days=int(daily.get("lookback_days", 3)) - 1)
+    )
     ingestion = _run_arxiv_ingest(
         service,
         category=str(daily.get("category", "cs.AI")),
@@ -924,20 +993,23 @@ def _run_arxiv_ingest(
             page_size=page_size,
         )
     )
+    discovery_citations = refresh_discovery_citations(service, group_id=group["id"])
     prioritization = None
     selected_discovery_ids = None
     if priority_config is not None:
-        prioritization = prioritize_discoveries(
-            service,
-            provider_from_settings(service.settings),
-            group_id=group["id"],
-            budget=int(priority_config.get("budget", 40)),
-            primary_only=primary_only,
-            preference_share=float(priority_config.get("preference_share", 0.6)),
-            frontier_share=float(priority_config.get("frontier_share", 0.2)),
-            exploration_share=float(priority_config.get("exploration_share", 0.2)),
-            personalized=bool(priority_config.get("personalized", True)),
-        )
+        prioritization = _stored_prioritization(service, group["id"])
+        if prioritization is None:
+            prioritization = prioritize_discoveries(
+                service,
+                provider_from_settings(service.settings),
+                group_id=group["id"],
+                budget=int(priority_config.get("budget", 40)),
+                primary_only=primary_only,
+                preference_share=float(priority_config.get("preference_share", 0.6)),
+                frontier_share=float(priority_config.get("frontier_share", 0.2)),
+                exploration_share=float(priority_config.get("exploration_share", 0.2)),
+                personalized=bool(priority_config.get("personalized", True)),
+            )
         selected_discovery_ids = prioritization["selected_discovery_ids"]
     acquisition = ingestor.acquire_group(
         group["id"],
@@ -977,6 +1049,7 @@ def _run_arxiv_ingest(
                 (group["id"], int(primary_only), category, *selected_params),
             )
         ]
+    citations = refresh_citations(service, paper_ids=paper_ids)
     enrichment_results: list[dict[str, Any]] = []
     enrichment_error = None
     if enrichment != "none":
@@ -1031,6 +1104,7 @@ def _run_arxiv_ingest(
             "visual_evidence_this_run": visual_count,
         },
         "prioritization": prioritization,
+        "citations": {"pre_ranking": discovery_citations, "acquired": citations},
         "enrichment": {
             "completed_this_run": len(enrichment_results),
             "eligible_papers": len(paper_ids),
@@ -1046,6 +1120,63 @@ def _run_arxiv_ingest(
             "reasoning_model": service.settings.reasoning_model,
             "types": list(extraction_types),
         },
+    }
+
+
+def _stored_prioritization(
+    service: PaperTrail, group_id: str
+) -> dict[str, Any] | None:
+    """Reuse a prior capped selection when a daily run is resumed after enrichment failure."""
+    with sqlite3.connect(service.settings.database_path) as db:
+        db.row_factory = sqlite3.Row
+        profile_row = db.execute(
+            """
+            SELECT s.profile_version_id
+            FROM paper_priority_scores s
+            JOIN discovery_records d ON d.id = s.discovery_id
+            JOIN ingestion_group_runs gr ON gr.run_id = d.run_id
+            WHERE gr.group_id = ? AND s.lane <> 'deferred'
+            ORDER BY s.created_at DESC LIMIT 1
+            """,
+            (group_id,),
+        ).fetchone()
+        if not profile_row:
+            return None
+        profile_id = profile_row["profile_version_id"]
+        rows = db.execute(
+            """
+            SELECT s.discovery_id, s.lane, s.final_score, d.status
+            FROM paper_priority_scores s
+            JOIN discovery_records d ON d.id = s.discovery_id
+            JOIN ingestion_group_runs gr ON gr.run_id = d.run_id
+            WHERE gr.group_id = ? AND s.profile_version_id = ?
+              AND s.lane <> 'deferred'
+            ORDER BY s.final_score DESC, s.discovery_id
+            """,
+            (group_id, profile_id),
+        ).fetchall()
+        if not rows or not any(row["status"] == "acquired" for row in rows):
+            return None
+        candidate_count = db.execute(
+            """
+            SELECT count(*) FROM paper_priority_scores s
+            JOIN discovery_records d ON d.id = s.discovery_id
+            JOIN ingestion_group_runs gr ON gr.run_id = d.run_id
+            WHERE gr.group_id = ? AND s.profile_version_id = ?
+            """,
+            (group_id, profile_id),
+        ).fetchone()[0]
+    lane_counts: dict[str, int] = {}
+    for row in rows:
+        lane_counts[row["lane"]] = lane_counts.get(row["lane"], 0) + 1
+    return {
+        "profile": aggregate_profile(service, persist=True),
+        "selected_discovery_ids": [row["discovery_id"] for row in rows],
+        "lane_counts": lane_counts,
+        "candidate_count": candidate_count,
+        "budget": len(rows),
+        "llm_relevance_count": candidate_count,
+        "resumed": True,
     }
 
 

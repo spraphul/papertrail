@@ -2,6 +2,11 @@
 
 PaperTrail keeps the PDF design's epistemic and provenance boundaries while collapsing its operational footprint into one Python process, one SQLite file, one artifact directory, and an optional local Ollama runtime.
 
+The intelligence boundary has Ollama and OpenAI implementations for portable use plus an
+environment-authenticated AI Factory adapter for Oracle development. The latter bypasses proxy
+configuration and serializes embedding batches into documented scalar requests; bearer tokens
+are never persisted.
+
 ```text
 arXiv / local PDFs
         │
@@ -74,7 +79,12 @@ Novelty and discovery runs are persisted with input, snapshot, exact evidence ID
 
 The daily scheduler overlaps discovery windows and retains metadata plus abstracts for
 the complete configured surplus. A configurable budget, 40 papers by default, determines
-which pending papers receive PDF acquisition and full enrichment. Once a preference
+which pending papers receive PDF acquisition and full enrichment. Before acquisition,
+PaperTrail batches scholarly identifiers through Semantic Scholar, caches citation metadata,
+asks the reasoning model to score bounded title-and-abstract batches against the unified profile,
+and ranks candidates using that score, embedding affinity, recency, age-normalized citation impact, and
+frontier/exploration signals. Provider failure leaves citation weight neutral and never blocks
+the run. Once a preference
 profile is sufficiently reliable, the default allocation is 60% aligned work, 20%
 frontier work, and 20% deliberate exploration. Scores, lane, explanation, and profile
 version are stored for every discovery record considered.
@@ -103,10 +113,19 @@ assistant answers. Unchanged digests cause no model call, while changed sessions
 their earlier derived events transactionally. Disabling stops future reads but retains
 derived signals; forgetting removes consent, hashes, and events for that source.
 
-Preference signals rank candidates but cannot support scientific claims. Favourites have
-the highest authority, explicit chat interests outrank inferred ones, and chat signals
-decay over time. Personalized ingestion activates after three favourites or eight
+Preference signals rank candidates but cannot support scientific claims. A single editable
+natural-language note, authored in the dashboard or supplied to setup as text/Markdown, has the
+highest authority. Favourites rank next, explicit chat interests outrank inferred ones, and chat
+signals decay over time. Editing the note versions the aggregate profile and immediately
+re-ranks existing members inside their established groups. Personalized ingestion activates
+after a non-empty explicit note, three favourites, or eight
 high-confidence events spanning at least three sessions with an explicit interest.
+
+Group membership and ordering are separate. Organization decides which problem neighborhood a
+paper belongs to. Presentation ranking then combines 30% membership relevance, 30% personal
+affinity, 25% recency, and 15% age-normalized citation impact, redistributing unavailable
+components. With no active profile, affinity weight moves to relevance and recency. The API
+returns component scores and concise recommendation reasons; none are scientific evidence.
 
 ### Organization and consolidation
 

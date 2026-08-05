@@ -25,6 +25,7 @@ from papertrail.preferences import (
     prioritize_discoveries,
     read_research_turns,
     set_preference_source,
+    replace_explicit_interests,
     sync_preferences,
 )
 from papertrail.service import PaperTrail, stable_id, utc_now
@@ -37,12 +38,26 @@ class HistoryPreferenceProvider:
 
     def __init__(self) -> None:
         self.extraction_calls = 0
+        self.relevance_calls = 0
         self.prompts: list[str] = []
 
     def health(self) -> dict:
         return {"available": True}
 
     def structured(self, *, system: str, prompt: str, schema: dict) -> dict:
+        if "scores" in schema.get("properties", {}):
+            self.relevance_calls += 1
+            papers = json.loads(prompt)["papers"]
+            return {
+                "scores": [
+                    {
+                        "discovery_id": paper["discovery_id"],
+                        "relevance": 0.95 if "agent" in paper["abstract"].casefold() else 0.1,
+                        "reason": "Matches reliable adaptive agent mechanisms.",
+                    }
+                    for paper in papers
+                ]
+            }
         self.extraction_calls += 1
         self.prompts.append(prompt)
         return {
@@ -161,6 +176,32 @@ class PreferenceTests(unittest.TestCase):
         self.assertTrue(profile["active"])
         self.assertEqual(profile["favorite_ids"], [])
         self.assertIn("adaptive tool interfaces", profile["preference_labels"])
+
+    def test_dashboard_interests_are_editable_high_authority_and_clearable(self) -> None:
+        first = replace_explicit_interests(
+            self.service,
+            "I care about adaptive tool interfaces and reliable agent evaluation.",
+            self.provider,
+        )
+        self.assertEqual(first["explicit"]["extraction_status"], "ready")
+        self.assertTrue(first["profile"]["active_for_ingestion"])
+        self.assertTrue(first["profile"]["explicit_note_active"])
+        self.assertEqual(
+            inspect_preferences(self.service)["explicit"]["text"],
+            "I care about adaptive tool interfaces and reliable agent evaluation.",
+        )
+
+        edited = replace_explicit_interests(
+            self.service,
+            "I now prefer protein language model research.",
+            None,
+        )
+        self.assertEqual(edited["explicit"]["extraction_status"], "pending")
+        self.assertIn("protein language model", " ".join(edited["profile"]["positive_labels"]))
+
+        cleared = replace_explicit_interests(self.service, "", self.provider)
+        self.assertEqual(cleared["explicit"]["extraction_status"], "empty")
+        self.assertFalse(cleared["profile"]["explicit_note_active"])
 
     def test_claude_adapter_reads_user_turns_only(self) -> None:
         path = self.home / "claude.jsonl"
@@ -403,6 +444,8 @@ class PreferenceTests(unittest.TestCase):
         self.assertGreaterEqual(result["lane_counts"].get("preference", 0), 1)
         self.assertGreaterEqual(result["lane_counts"].get("frontier", 0), 1)
         self.assertGreaterEqual(result["lane_counts"].get("exploration", 0), 1)
+        self.assertEqual(result["llm_relevance_count"], 6)
+        self.assertEqual(self.provider.relevance_calls, 1)
         with closing(sqlite3.connect(self.service.settings.database_path)) as db:
             self.assertEqual(
                 db.execute("SELECT count(*) FROM discovery_records").fetchone()[0], 6

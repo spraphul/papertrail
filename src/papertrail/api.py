@@ -12,12 +12,13 @@ from .service import PaperTrail
 from .daily_digest import dashboard_data, figure_path, get_blog, paper_artifact_path
 from .organization import latest_organization
 from .intelligence import ResearchIntelligence
+from .preferences import inspect_preferences, replace_explicit_interests
 
 
 class PaperTrailHandler(BaseHTTPRequestHandler):
     service: PaperTrail
     intelligence: ResearchIntelligence | None = None
-    server_version = "PaperTrail/0.10"
+    server_version = "PaperTrail/0.11"
 
     def _json(self, status: int, value: Any) -> None:
         body = json.dumps(value, indent=2).encode()
@@ -29,6 +30,8 @@ class PaperTrailHandler(BaseHTTPRequestHandler):
 
     def _body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
+        if length > 64 * 1024:
+            raise ValueError("JSON request body is too large")
         return json.loads(self.rfile.read(length) or b"{}")
 
     def _bytes(self, status: int, body: bytes, content_type: str) -> None:
@@ -99,6 +102,9 @@ class PaperTrailHandler(BaseHTTPRequestHandler):
             if parsed.path == "/v1/favorites":
                 self._json(200, self.service.list_favorites())
                 return
+            if parsed.path == "/v1/preferences":
+                self._json(200, inspect_preferences(self.service))
+                return
             if parsed.path == "/v1/organization/latest":
                 self._json(200, latest_organization(self.service) or {"status": "not_ready"})
                 return
@@ -124,6 +130,8 @@ class PaperTrailHandler(BaseHTTPRequestHandler):
                 self._json(200, self.service.snapshot_info(snapshot_id))
                 return
             self._json(404, {"error": "not_found", "message": "Unknown route"})
+        except (BrokenPipeError, ConnectionResetError):
+            return
         except (KeyError, ValueError) as error:
             self._json(404 if isinstance(error, KeyError) else 400, _error(error))
         except Exception as error:
@@ -153,6 +161,14 @@ class PaperTrailHandler(BaseHTTPRequestHandler):
                     raise ValueError("favorite must be a boolean")
                 paper_id = parsed.path.rsplit("/", 1)[-1]
                 self._json(200, self.service.set_favorite(paper_id, favorite))
+                return
+            if parsed.path == "/v1/preferences/explicit":
+                self._require_same_origin_json()
+                text = body.get("text")
+                if not isinstance(text, str):
+                    raise ValueError("text must be a string")
+                provider = self.intelligence.provider if self.intelligence else None
+                self._json(200, replace_explicit_interests(self.service, text, provider))
                 return
             if parsed.path == "/v1/search":
                 self._json(
@@ -203,11 +219,11 @@ class PaperTrailHandler(BaseHTTPRequestHandler):
     def _require_same_origin_json(self) -> None:
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().casefold()
         if content_type != "application/json":
-            raise ValueError("Favourite changes require application/json")
+            raise ValueError("Changes require application/json")
         origin = self.headers.get("Origin")
         host = self.headers.get("Host")
         if origin and (not host or urlparse(origin).netloc != host):
-            raise PermissionError("Cross-origin favourite changes are not allowed")
+            raise PermissionError("Cross-origin changes are not allowed")
 
     def log_message(self, format: str, *args: Any) -> None:
         print(f"papertrail-api: {format % args}")

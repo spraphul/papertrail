@@ -1,7 +1,9 @@
 const app = document.querySelector('#app');
 let data;
+let preferenceData;
 let favoritePapers = [];
 let favoriteIds = new Set();
+const expandedFavoriteIds = new Set();
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -43,6 +45,19 @@ async function loadFavorites() {
   if (data?.totals) data.totals.favorites = value.count;
 }
 
+async function loadDashboard() {
+  const response = await fetch('/v1/dashboard');
+  if (!response.ok) throw new Error('Dashboard unavailable');
+  data = await response.json();
+  if (data?.totals) data.totals.favorites = favoritePapers.length;
+}
+
+async function loadPreferences() {
+  const response = await fetch('/v1/preferences');
+  if (!response.ok) throw new Error('Research profile unavailable');
+  preferenceData = await response.json();
+}
+
 function bindStars() {
   document.querySelectorAll('[data-favorite-paper]').forEach(button => {
     button.onclick = async event => {
@@ -59,6 +74,7 @@ function bindStars() {
         });
         if (!response.ok) throw new Error('Could not update favourites');
         await loadFavorites();
+        await loadDashboard();
         await renderRoute();
       } catch (error) {
         button.disabled = false;
@@ -66,6 +82,53 @@ function bindStars() {
       }
     };
   });
+}
+
+function bindInterestForm() {
+  const form = document.querySelector('#interest-form');
+  if (!form) return;
+  form.onsubmit = async event => {
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    const status = form.querySelector('.interest-status');
+    button.disabled = true;
+    status.textContent = 'Understanding and applying your interests…';
+    try {
+      const response = await fetch('/v1/preferences/explicit', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: form.elements.interests.value})
+      });
+      const value = await response.json();
+      if (!response.ok) throw new Error(value.message || 'Could not save interests');
+      await Promise.all([loadPreferences(), loadDashboard(), loadFavorites()]);
+      await renderRoute();
+    } catch (error) {
+      button.disabled = false;
+      status.textContent = error.message;
+      status.classList.add('failed');
+    }
+  };
+  form.querySelector('[data-interest-cancel]').onclick = () => {
+    form.elements.interests.value = preferenceData?.explicit?.text || '';
+  };
+}
+
+function bindFavoriteToggles() {
+  document.querySelectorAll('[data-favorite-toggle]').forEach(button => {
+    button.onclick = () => {
+      const paperId = button.dataset.favoriteToggle;
+      if (expandedFavoriteIds.has(paperId)) expandedFavoriteIds.delete(paperId);
+      else expandedFavoriteIds.add(paperId);
+      renderRoute();
+    };
+  });
+}
+
+function rankingReasons(paper) {
+  const reasons = paper.ranking?.reasons || [];
+  return reasons.length ? `<div class="ranking-reasons">${reasons.map(reason =>
+    `<span>${esc(reason)}</span>`).join('')}</div>` : '';
 }
 
 function selectionChip(blog) {
@@ -92,18 +155,76 @@ function rhythm(items) {
     `<span>${esc(items.at(-1).day)}</span></div>`;
 }
 
-function groupCard(group, limit = 4) {
-  const papers = group.papers.slice(0, limit).map(paper =>
-    `<div class="group-paper"><a href="/v1/papers/${encodeURIComponent(paper.paper_id)}/artifact" ` +
-    `target="_blank">${esc(paper.title)}</a><span>${paper.is_new ? '<small>New</small>' : ''}` +
+function groupCard(group, limit = 4, expandable = false) {
+  const clusterId = String(group.cluster_id || '');
+  const availableCount = group.papers.length;
+  const canExpand = expandable && availableCount > limit;
+  const visiblePapers = group.papers.slice(0, limit);
+  const paperListId = `group-papers-${clusterId.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+  const papers = visiblePapers.map(paper =>
+    `<div class="group-paper"><div><a href="#/paper/${encodeURIComponent(paper.paper_id)}">` +
+    `${esc(paper.title)}</a>${rankingReasons(paper)}</div><span>` +
+    `${paper.citation_count != null ? `<small>${number(paper.citation_count)} cites</small>` : ''}` +
+    `${paper.is_new ? '<small>New</small>' : ''}` +
     `<a class="source" href="${safeUrl(paper.source_url)}" target="_blank" rel="noreferrer">Source ↗</a>` +
     `${starButton(paper.paper_id, true)}</span></div>`
   ).join('');
+  const toggle = canExpand
+    ? `<a class="group-toggle" href="#/groups/${encodeURIComponent(clusterId)}">` +
+      `View all ${availableCount} papers →</a>`
+    : '';
   return `<article class="group-card"><span class="group-count">${group.paper_count} papers · ` +
     `${group.new_paper_count} new</span><h3>${esc(group.label)}</h3>` +
     `<p class="date">${esc(group.description)}</p><div class="tags">` +
     `${group.top_terms.slice(0, 5).map(term => `<span class="tag">${esc(term)}</span>`).join('')}</div>` +
-    `<div class="group-papers">${papers}</div></article>`;
+    `<div class="group-papers" id="${esc(paperListId)}">${papers}</div>${toggle}</article>`;
+}
+
+function groupDetail(clusterId) {
+  const organization = data.organization;
+  const group = (organization?.groups || []).find(item => item.cluster_id === clusterId);
+  if (!group) {
+    app.innerHTML = '<div class="empty">Research neighborhood not found.</div>';
+    return;
+  }
+  const papers = group.papers.map((paper, index) =>
+    `<article class="group-detail-paper"><span class="group-rank">${index + 1}</span><div>` +
+    `<a class="favorite-title" href="#/paper/${encodeURIComponent(paper.paper_id)}">${esc(paper.title)}</a>` +
+    `<p>${esc((paper.authors || []).slice(0, 4).join(', '))}${(paper.authors || []).length > 4 ? ' et al.' : ''}</p>` +
+    `${rankingReasons(paper)}</div><div class="group-paper-actions">` +
+    `${paper.citation_count == null ? '' : `<small>${number(paper.citation_count)} cites</small>`}` +
+    `<a class="source" href="${safeUrl(paper.source_url)}" target="_blank" rel="noreferrer">Source ↗</a>` +
+    `${starButton(paper.paper_id, true)}</div></article>`
+  ).join('');
+  app.innerHTML = `<div class="topline"><a class="article-back" href="#/groups">← All research groups</a>` +
+    `<span class="date">${group.paper_count} papers · ranked for you</span></div>` +
+    `<span class="eyebrow">Problem neighborhood</span><h1>${esc(group.label)}</h1>` +
+    `<p class="lede">${esc(group.description)}</p><div class="tags">` +
+    `${group.top_terms.map(term => `<span class="tag">${esc(term)}</span>`).join('')}</div>` +
+    `<section class="group-detail-list">${papers}</section>` +
+    `<p class="method-note">Membership is LLM-adjudicated from abstracts and extracted scientific ` +
+    `features. Ordering blends that relevance with your LLM-structured profile, recency, and ` +
+    `age-normalized citations.</p>`;
+}
+
+function interestCard() {
+  const explicit = preferenceData?.explicit || {};
+  const profile = preferenceData?.profile || {};
+  const concepts = (profile.concepts || []).slice(0, 8);
+  const state = explicit.extraction_status === 'pending'
+    ? 'Saved · deeper understanding will retry with the next daily run'
+    : explicit.updated_at ? `Saved ${esc(explicit.updated_at.slice(0, 10))}` : 'Add interests anytime';
+  return `<section class="interest-card"><div class="interest-copy"><span class="eyebrow">Personalization</span>` +
+    `<h2>Your research interests</h2><p>Write naturally. These explicit interests guide current ` +
+    `rankings, future ingestion, and selective deep dives—and outweigh implicitly learned signals.</p>` +
+    (concepts.length ? `<div class="interest-signals">${concepts.map(item =>
+      `<span class="${item.polarity === 'negative' ? 'negative' : ''}">${esc(item.label)}</span>`
+    ).join('')}</div>` : '') + `</div><form id="interest-form"><label for="interests">Areas, ` +
+    `problems, methods, or work you want less of</label><textarea id="interests" name="interests" ` +
+    `maxlength="12000" placeholder="I care about agents that adapt to changing tools…">` +
+    `${esc(explicit.text || '')}</textarea><div class="interest-actions"><span class="interest-status">` +
+    `${state}</span><button type="button" class="button secondary" data-interest-cancel>Cancel</button>` +
+    `<button type="submit" class="button">Save interests</button></div></form></section>`;
 }
 
 function dashboard() {
@@ -113,6 +234,7 @@ function dashboard() {
     `<span class="date">${esc(digest?.run_date || 'Waiting for the first digest')}</span></div>` +
     `<h1>${esc(digest?.headline || 'Your research trail starts here.')}</h1>` +
     `<p class="lede">${esc(digest?.synthesis || 'PaperTrail is indexing evidence. Daily patterns and agent-written deep dives will appear after the next completed run.')}</p>` +
+    interestCard() +
     `<section class="stats"><div class="stat"><strong>${number(data.totals.papers)}</strong><span>Papers indexed</span></div>` +
     `<div class="stat"><strong>${number(data.totals.evidence)}</strong><span>Evidence passages</span></div>` +
     `<div class="stat"><strong>${number(data.totals.figures)}</strong><span>Paper figures</span></div>` +
@@ -151,7 +273,7 @@ function groups() {
     `<p class="lede">${organization.paper_count} papers consolidated into ${organization.cluster_count} problem neighborhoods. ` +
     `${organization.semantic_paper_count} papers had semantic coverage.</p>` +
     `<div class="section-head"><h2>Problem neighborhoods</h2><p>${esc(organization.snapshot_id)}</p></div>` +
-    `<section class="group-grid">${organization.groups.map(group => groupCard(group, 8)).join('')}</section>` +
+    `<section class="group-grid">${organization.groups.map(group => groupCard(group, 8, true)).join('')}</section>` +
     `<p class="method-note">Groups are navigation aids, not scientific claims. ${method}</p>`;
 }
 
@@ -164,21 +286,30 @@ function archive() {
       '<div class="empty">The archive is empty.</div>');
 }
 
-function favoriteCard(paper) {
-  return `<article class="favorite-card"><div class="card-top"><span class="eyebrow">Saved paper</span>` +
-    `${starButton(paper.paper_id, true)}</div><h3>${esc(paper.title)}</h3>` +
-    `<p class="favorite-authors">${esc((paper.authors || []).join(', '))}</p>` +
-    `<p>${esc(paper.abstract || 'No abstract is available.')}</p><div class="favorite-meta">` +
-    `<span>${esc(paper.published_date || 'Undated')}</span><span>Saved ${esc(paper.favorited_at.slice(0, 10))}</span></div>` +
-    `<div class="actions"><a class="button" href="/v1/papers/${encodeURIComponent(paper.paper_id)}/artifact" target="_blank">Read paper</a>` +
-    `<a class="button secondary" href="${safeUrl(paper.source_url)}" target="_blank" rel="noreferrer">Open source ↗</a></div></article>`;
+function favoriteRow(paper) {
+  const expanded = expandedFavoriteIds.has(paper.paper_id);
+  const detailId = `favorite-detail-${paper.paper_id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+  return `<article class="favorite-row"><div class="favorite-summary"><button type="button" ` +
+    `class="favorite-expand" data-favorite-toggle="${esc(paper.paper_id)}" aria-expanded="${expanded}" ` +
+    `aria-controls="${esc(detailId)}"><span aria-hidden="true">${expanded ? '−' : '+'}</span></button>` +
+    `<div><a class="favorite-title" href="#/paper/${encodeURIComponent(paper.paper_id)}">` +
+    `${esc(paper.title)}</a><p>${esc((paper.authors || []).slice(0, 3).join(', '))}` +
+    `${(paper.authors || []).length > 3 ? ' et al.' : ''} · ${esc(paper.published_date || 'Undated')}</p>` +
+    `${rankingReasons(paper)}</div><span class="saved-date">Saved ${esc((paper.favorited_at || '').slice(0, 10))}</span>` +
+    `${starButton(paper.paper_id, true)}</div>` +
+    (expanded ? `<div class="favorite-detail" id="${esc(detailId)}"><p>${esc(paper.abstract || 'No abstract is available.')}</p>` +
+      `<div class="favorite-meta"><span>${paper.citation_count == null ? 'Citation metadata unavailable' : `${number(paper.citation_count)} citations`}</span>` +
+      `<span>${esc((paper.authors || []).join(', '))}</span></div><div class="actions">` +
+      `<a class="button" href="#/paper/${encodeURIComponent(paper.paper_id)}">View paper</a>` +
+      `<a class="button secondary" href="${safeUrl(paper.source_url)}" target="_blank" rel="noreferrer">Open source ↗</a>` +
+      `</div></div>` : '') + `</article>`;
 }
 
 function favorites() {
   app.innerHTML = `<div class="topline"><span class="eyebrow">Personal library</span>` +
     `<span class="date">${favoritePapers.length} saved</span></div><h1>Favourites</h1>` +
     `<p class="lede">The papers you want to return to, kept locally with the rest of your research trail.</p>` +
-    (favoritePapers.length ? `<section class="favorite-grid">${favoritePapers.map(favoriteCard).join('')}</section>` :
+    (favoritePapers.length ? `<section class="favorite-list">${favoritePapers.map(favoriteRow).join('')}</section>` :
       '<div class="empty">No favourites yet. Use the star beside a paper or deep dive to save it here.</div>');
 }
 
@@ -191,7 +322,7 @@ async function blog(slug) {
     `<div class="article-title-row"><h1>${esc(value.title)}</h1>${starButton(value.paper_id)}</div>` +
     `<p class="dek">${esc(value.dek)}</p><div class="meta"><span>${esc(value.paper_title)}</span>` +
     `<span>${esc((value.authors || []).join(', '))}</span><span>${esc(value.published_date || '')}</span></div>` +
-    `<div class="actions"><button class="button" id="read-paper">Read paper</button>` +
+    `<div class="actions"><a class="button" href="#/paper/${encodeURIComponent(value.paper_id)}">View paper</a>` +
     `<a class="button secondary" href="${safeUrl(value.source_url)}" target="_blank" rel="noreferrer">Open source ↗</a></div>` +
     `<div class="panel selection-panel"><span class="eyebrow">${selectionChip(value)} Why this was picked</span>` +
     `<p>${esc(value.selection_reason)}</p></div>` +
@@ -200,17 +331,32 @@ async function blog(slug) {
     `${value.figure_ids.map((id, index) => `<figure class="figure"><img loading="lazy" ` +
       `src="/v1/figures/${encodeURIComponent(id)}/image" alt="Paper figure ${index + 1}">` +
       `<figcaption>Visual evidence ${esc(id)} from the immutable local paper version.</figcaption></figure>`).join('')}</article>`;
-  document.querySelector('#read-paper').onclick = () => reader(value);
 }
 
-function reader(paper) {
-  const shell = document.createElement('div');
-  shell.className = 'pdf-shell';
-  shell.innerHTML = `<div class="pdf-bar"><span>${esc(paper.paper_title || paper.title)}</span>` +
-    `<button aria-label="Close">×</button></div><iframe title="${esc(paper.paper_title || paper.title)}" ` +
-    `src="/v1/papers/${encodeURIComponent(paper.paper_id)}/artifact"></iframe>`;
-  shell.querySelector('button').onclick = () => shell.remove();
-  document.body.append(shell);
+async function paperDetail(paperId) {
+  const response = await fetch(`/v1/papers/${encodeURIComponent(paperId)}`);
+  if (!response.ok) throw new Error('Paper not found');
+  const payload = await response.json();
+  const value = payload.results?.[0];
+  if (!value) throw new Error('Paper not found');
+  const localArtifact = value.artifact_available
+    ? `<div class="paper-frame"><iframe title="Full paper: ${esc(value.canonical_title)}" ` +
+      `src="/v1/papers/${encodeURIComponent(paperId)}/artifact"></iframe></div>`
+    : '<div class="empty">The local paper artifact is not available yet.</div>';
+  app.innerHTML = `<article class="paper-detail"><a class="article-back" href="#/groups">← Research groups</a>` +
+    `<div class="paper-title-row"><div><span class="eyebrow">Local paper reader</span>` +
+    `<h1>${esc(value.canonical_title)}</h1></div>${starButton(paperId)}</div>` +
+    `<div class="meta"><span>${esc((value.authors || []).join(', '))}</span>` +
+    `<span>${esc(value.published_date || 'Undated')}</span>` +
+    `<span>${value.citation_count == null ? 'Citation metadata unavailable' : `${number(value.citation_count)} citations`}</span></div>` +
+    `<p class="paper-abstract">${esc(value.abstract || 'No abstract is available.')}</p>` +
+    `<div class="actions"><a class="button secondary" href="${safeUrl(value.source_url)}" ` +
+    `target="_blank" rel="noreferrer">Open source ↗</a></div>${localArtifact}` +
+    ((value.figures || []).length ? `<div class="section-head"><h2>Extracted figures</h2><p>${value.figures.length} visuals</p></div>` +
+      `<div class="reader-figures">${value.figures.map(figure => `<figure><img loading="lazy" ` +
+        `src="/v1/figures/${encodeURIComponent(figure.figure_id)}/image" alt="${esc(figure.label)}">` +
+        `<figcaption>${esc(figure.caption || figure.label)}</figcaption></figure>`).join('')}</div>` : '') +
+    `</article>`;
 }
 
 async function renderRoute() {
@@ -219,19 +365,21 @@ async function renderRoute() {
     link.classList.toggle('active', link.getAttribute('href') === location.hash)
   );
   if (parts[0] === 'blog') await blog(decodeURIComponent(parts.slice(1).join('/')));
+  else if (parts[0] === 'paper') await paperDetail(decodeURIComponent(parts.slice(1).join('/')));
+  else if (parts[0] === 'groups' && parts[1]) groupDetail(decodeURIComponent(parts.slice(1).join('/')));
   else if (parts[0] === 'groups') groups();
   else if (parts[0] === 'archive') archive();
   else if (parts[0] === 'favorites') favorites();
   else dashboard();
   bindStars();
+  bindFavoriteToggles();
+  bindInterestForm();
 }
 
 async function route() {
   try {
     if (!data) {
-      const [dashboardResponse] = await Promise.all([fetch('/v1/dashboard'), loadFavorites()]);
-      if (!dashboardResponse.ok) throw new Error('Dashboard unavailable');
-      data = await dashboardResponse.json();
+      await Promise.all([loadDashboard(), loadFavorites(), loadPreferences()]);
       data.totals.favorites = favoritePapers.length;
       document.querySelector('#rail-count').textContent = number(data.totals.papers) + ' papers';
     }
