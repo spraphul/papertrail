@@ -2,10 +2,9 @@
 
 PaperTrail keeps the PDF design's epistemic and provenance boundaries while collapsing its operational footprint into one Python process, one SQLite file, one artifact directory, and an optional local Ollama runtime.
 
-The intelligence boundary has Ollama and OpenAI implementations for portable use plus an
-environment-authenticated AI Factory adapter for Oracle development. The latter bypasses proxy
-configuration and serializes embedding batches into documented scalar requests; bearer tokens
-are never persisted.
+The intelligence boundary has portable Ollama and OpenAI implementations. Ollama keeps
+reasoning and embeddings local; the OpenAI adapter supports configurable model IDs and
+compatible `/v1` endpoints without persisting credentials.
 
 ```text
 arXiv / local PDFs

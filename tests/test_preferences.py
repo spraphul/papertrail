@@ -94,7 +94,7 @@ class PreferenceTests(unittest.TestCase):
         history = self.home / "codex-history"
         history.mkdir()
         session = history / "session.jsonl"
-        secret = "sk-super-secret-value-1234567890"
+        secret = "sk" + "-super-secret-value-1234567890"
         session.write_text(
             "\n".join(
                 [

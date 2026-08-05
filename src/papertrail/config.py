@@ -14,11 +14,6 @@ class Settings:
     ollama_url: str = "http://127.0.0.1:11434"
     openai_base_url: str = "https://api.openai.com/v1"
     openai_api_key: str | None = None
-    aifactory_base_url: str = (
-        "http://aifactory-healthai.digitalassistant.oci.oraclecloud.com:3000"
-    )
-    aifactory_api_version: str = "2024-10-21"
-    aifactory_bearer_token: str | None = None
     embedding_model: str = "embeddinggemma"
     reasoning_model: str = "qwen2.5:7b"
     semantic_scholar_api_key: str | None = None
@@ -49,12 +44,6 @@ def settings(home: str | Path | None = None) -> Settings:
         ollama_url=os.environ.get("PAPERTRAIL_OLLAMA_URL", "http://127.0.0.1:11434"),
         openai_base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         openai_api_key=_openai_api_key(),
-        aifactory_base_url=os.environ.get(
-            "AIFACTORY_BASE_URL",
-            "http://aifactory-healthai.digitalassistant.oci.oraclecloud.com:3000",
-        ),
-        aifactory_api_version=os.environ.get("AIFACTORY_API_VERSION", "2024-10-21"),
-        aifactory_bearer_token=os.environ.get("AIFACTORY_BEARER_TOKEN"),
         embedding_model=os.environ.get("PAPERTRAIL_EMBEDDING_MODEL", "embeddinggemma"),
         reasoning_model=os.environ.get("PAPERTRAIL_REASONING_MODEL", "qwen2.5:7b"),
         semantic_scholar_api_key=os.environ.get("SEMANTIC_SCHOLAR_API_KEY"),

@@ -29,7 +29,7 @@ from papertrail.daily_digest import (
 from papertrail.intelligence import ResearchIntelligence
 from papertrail.organization import organize_snapshot
 from papertrail.profile import configure_runtime, load_profile, save_profile
-from papertrail.providers import AIFactoryProvider, OpenAIProvider, provider_from_settings
+from papertrail.providers import OpenAIProvider
 from papertrail.service import PaperTrail
 
 
@@ -589,79 +589,6 @@ class PublicPaperTrailTests(unittest.TestCase):
             result = provider.health()
         self.assertTrue(result["available"])
         self.assertNotIn("test-secret", json.dumps(result))
-
-    def test_aifactory_embeddings_use_one_scalar_request_per_text(self) -> None:
-        provider = AIFactoryProvider(bearer_token="factory-secret")
-        responses = [
-            {"data": [{"index": 0, "embedding": [0.1, 0.2]}]},
-            {"data": [{"index": 0, "embedding": [0.3, 0.4]}]},
-        ]
-        with patch.object(provider, "_request", side_effect=responses) as request:
-            vectors = provider.embed(["first paper", "second paper"])
-        self.assertEqual(vectors, [[0.1, 0.2], [0.3, 0.4]])
-        self.assertEqual(request.call_count, 2)
-        self.assertEqual(request.call_args_list[0].args[1], {"input": "first paper"})
-        self.assertEqual(request.call_args_list[1].args[1], {"input": "second paper"})
-
-    def test_aifactory_reasoning_uses_exact_deployment_and_json_schema(self) -> None:
-        provider = AIFactoryProvider(bearer_token="factory-secret")
-        response = {"choices": [{"message": {"content": '{"records": []}'}}]}
-        schema = {
-            "type": "object",
-            "properties": {"records": {"type": "array", "items": {"type": "string"}}},
-            "required": ["records"],
-        }
-        with patch.object(provider, "_request", return_value=response) as request:
-            result = provider.structured(system="Extract", prompt="Paper", schema=schema)
-        self.assertEqual(result, {"records": []})
-        path, payload = request.call_args.args
-        self.assertEqual(
-            path,
-            "/openai/deployments/gpt-5.4-2026-03-05/chat/completions",
-        )
-        self.assertEqual(payload["temperature"], 1)
-        self.assertIn("max_completion_tokens", payload)
-        self.assertFalse(
-            payload["response_format"]["json_schema"]["schema"]["additionalProperties"]
-        )
-        self.assertEqual(payload["max_completion_tokens"], 8192)
-
-    def test_aifactory_reasoning_tolerates_json_fences(self) -> None:
-        provider = AIFactoryProvider(bearer_token="factory-secret")
-        response = {
-            "choices": [
-                {"finish_reason": "stop", "message": {"content": "```json\n{\"ok\": true}\n```"}}
-            ]
-        }
-        with patch.object(provider, "_request", return_value=response):
-            result = provider.structured(
-                system="Return JSON",
-                prompt="Smoke",
-                schema={
-                    "type": "object",
-                    "properties": {"ok": {"type": "boolean"}},
-                    "required": ["ok"],
-                },
-            )
-        self.assertEqual(result, {"ok": True})
-
-    def test_aifactory_configuration_is_environment_only(self) -> None:
-        with patch.dict(
-            os.environ,
-            {
-                "PAPERTRAIL_EMBEDDING_PROVIDER": "aifactory",
-                "PAPERTRAIL_REASONING_PROVIDER": "aifactory",
-                "PAPERTRAIL_EMBEDDING_MODEL": "oracle-text-embedding-3-small",
-                "PAPERTRAIL_REASONING_MODEL": "gpt-5.4-2026-03-05",
-                "AIFACTORY_BEARER_TOKEN": "factory-secret",
-            },
-            clear=True,
-        ):
-            configured = settings(self.home)
-            provider = provider_from_settings(configured)
-        self.assertIsInstance(provider, AIFactoryProvider)
-        self.assertTrue(provider.health()["available"])
-        self.assertNotIn("factory-secret", json.dumps(provider.health()))
 
     def test_setup_accepts_arbitrary_openai_models_without_storing_key(self) -> None:
         output = StringIO()

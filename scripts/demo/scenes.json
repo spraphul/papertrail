@@ -1,0 +1,13 @@
+[
+  {"id":"pain","start":0,"end":18,"source":"pain.webm"},
+  {"id":"onboarding","start":18,"end":42,"source":"terminal.webm"},
+  {"id":"daily-run","start":42,"end":58,"source":"daily-run.webm"},
+  {"id":"interests","start":58,"end":64,"source":"dashboard-interests.webm"},
+  {"id":"groups","start":64,"end":71,"source":"dashboard-groups.webm"},
+  {"id":"group-detail","start":71,"end":79,"source":"dashboard-group-detail.webm"},
+  {"id":"deep-dive","start":79,"end":87,"source":"dashboard-deep-dive.webm"},
+  {"id":"paper-reader","start":87,"end":96,"source":"dashboard-paper-reader.webm"},
+  {"id":"favorites","start":96,"end":102,"source":"dashboard-favorites.webm"},
+  {"id":"codex","start":102,"end":135,"source":"codex.webm"},
+  {"id":"handoff","start":135,"end":150,"source":"handoff.webm"}
+]

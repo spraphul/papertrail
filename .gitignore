@@ -19,3 +19,9 @@ research/
 
 # The original design brief is a local input, not part of the distributable package.
 /PaperTrail Research Intelligence Platform.pdf
+
+# Isolated feature worktrees.
+.worktrees/
+.superpowers/
+.demo-work/
+docs/demo/raw/

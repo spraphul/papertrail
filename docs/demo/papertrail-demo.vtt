@@ -1,0 +1,100 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:06.000
+Two hundred and five new AI papers arrived today.
+
+00:00:06.000 --> 00:00:12.000
+I do not need two hundred and five summaries.
+I need to know which three deserve attention,
+
+00:00:12.000 --> 00:00:18.000
+what evidence they contain, and whether they change
+an idea I am already exploring.
+
+00:00:18.000 --> 00:00:24.000
+This is PaperTrail. Install the Python package,
+then describe your interests in ordinary Markdown.
+
+00:00:24.000 --> 00:00:30.000
+Connect Codex or Claude. The index, paper artifacts,
+preferences, and research history stay local.
+
+00:00:30.000 --> 00:00:36.000
+Ollama works fully locally.
+OpenAI lets you bring compatible models.
+
+00:00:36.000 --> 00:00:42.000
+Use the embedding and reasoning models
+available to your own account.
+
+00:00:42.000 --> 00:00:47.300
+One daily command discovered all 205 papers,
+then ranked them before downloading PDFs.
+
+00:00:47.300 --> 00:00:52.600
+Forty became 2,701 evidence passages,
+302 figures, and 25 research neighborhoods.
+
+00:00:52.600 --> 00:00:58.000
+The cap is 60 percent interests, 20 percent frontier,
+and 20 percent deliberate surprise.
+
+00:00:58.000 --> 00:01:04.200
+The dashboard explains that process.
+Edit your interest profile in plain language.
+
+00:01:04.200 --> 00:01:10.400
+See why each paper ranked: relevance, recency,
+citation context, problem, and mechanism.
+
+00:01:10.400 --> 00:01:16.600
+Problem neighborhoods consolidate papers
+that target the same research question.
+
+00:01:16.600 --> 00:01:22.800
+Open the full group to inspect every member,
+or save useful papers to a compact library.
+
+00:01:22.800 --> 00:01:29.200
+Read a personalized deep dive.
+Each links to the public source and exact evidence.
+
+00:01:29.200 --> 00:01:35.600
+Figures come from the acquired paper.
+View paper opens the local PDF reader.
+
+00:01:35.600 --> 00:01:42.000
+The source action remains a distinct link
+to the public arXiv page.
+
+00:01:42.000 --> 00:01:48.600
+The index is also an MCP research surface.
+Codex searches the agent-memory thread.
+
+00:01:48.600 --> 00:01:55.200
+It opens exact passages, checks figures,
+and challenges the pattern against nearby work.
+
+00:01:55.200 --> 00:02:01.800
+The answer cites evidence IDs and paper URLs,
+then turns the gap into a falsifiable proposal.
+
+00:02:01.800 --> 00:02:08.400
+Can versioned memory separate real adaptation
+from benchmark-specific recovery?
+
+00:02:08.400 --> 00:02:15.000
+This is not a claim of global novelty.
+It is an auditable, corpus-bounded hypothesis.
+
+00:02:15.000 --> 00:02:20.000
+PaperTrail is open source, local first,
+and deliberately small.
+
+00:02:20.000 --> 00:02:25.000
+Python, SQLite, your model provider,
+and the research clients you already use.
+
+00:02:25.000 --> 00:02:30.000
+Turn each day's surplus into a trail
+you can search, question, and build on.

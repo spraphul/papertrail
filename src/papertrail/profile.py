@@ -32,8 +32,6 @@ def configure_runtime(home: Path) -> dict[str, Any]:
         "reasoning_model": "PAPERTRAIL_REASONING_MODEL",
         "openai_base_url": "OPENAI_BASE_URL",
         "openai_api_key_file": "PAPERTRAIL_OPENAI_API_KEY_FILE",
-        "aifactory_base_url": "AIFACTORY_BASE_URL",
-        "aifactory_api_version": "AIFACTORY_API_VERSION",
     }
     for key, environment_name in mapping.items():
         value = providers.get(key)

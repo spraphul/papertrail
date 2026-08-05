@@ -15,7 +15,8 @@ dependencies = ["certifi>=2024.0"]
 [project.optional-dependencies]
 pdf = ["pypdf>=5.0"]
 scale = ["sqlite-vec>=0.1.9,<0.2"]
-dev = ["pytest>=8.0", "ruff>=0.9"]
+dev = ["pytest>=8.0", "ruff==0.14.3"]
+demo = ["playwright>=1.54,<2"]
 
 [project.scripts]
 papertrail = "papertrail.cli:main"
