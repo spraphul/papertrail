@@ -164,7 +164,7 @@ The README should show the animated preview as its first major visual. Clicking 
 
 ## Privacy and authenticity controls
 
-Before publishing, validation must scan source logs, transcripts, captions, rendered frames where practical, and repository artifacts for:
+Before publishing, validation must scan source logs, transcripts, captions, rendered frames where practical, and the entire public repository working tree for:
 
 - bearer/JWT patterns and API keys;
 - private provider or service names and endpoints;
@@ -174,7 +174,7 @@ Before publishing, validation must scan source logs, transcripts, captions, rend
 - missing or non-public paper source URLs;
 - evidence IDs that cannot be resolved by the demo MCP server.
 
-The recording must use the public OpenAI/Ollama-capable product surface. It must not imply that an internal provider is required.
+The recording and public repository must use the OpenAI/Ollama-capable product surface. Internal provider adapters, names, endpoints, credentials, documentation, configuration, and tests belong only in the separate internal repository and must not be present in the public release tree. The demo must not imply that any internal provider is required.
 
 ## Validation and acceptance criteria
 
@@ -188,7 +188,8 @@ The demo is ready to publish only when:
 - every visible evidence ID resolves through PaperTrail MCP;
 - the recorded Codex conclusion is supported by the cited evidence;
 - no browser console errors occur in captured scenes;
-- secret and privacy scans pass;
+- secret and privacy scans pass across both the media artifacts and public working tree;
+- no internal-only provider names, endpoints, adapters, documentation, or tests remain in the public tree;
 - the MP4, poster, preview, captions, and transcript can be opened from a fresh clone;
 - the complete demo can be regenerated from documented commands without modifying application code.
 
