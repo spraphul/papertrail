@@ -8,9 +8,9 @@
   },
   "dashboard_url": "http://127.0.0.1:8899",
   "routes": {
-    "group": "organization_cb023aa5b719d8f57783",
-    "paper": "replace-after-preparation",
-    "blog": "replace-after-preparation"
+    "group": "cluster_a6d6a37e219c73125cb1",
+    "paper": "paper_0cbbe07161fe284731f4",
+    "blog": "2026-08-04-thinking-can-repair-a-typo-but-not-a-rewritten-question"
   },
   "codex_prompt": "Use $papertrail-deep-research to investigate whether agent memory can detect and adapt to changing tool interfaces. Search broadly across the local corpus, inspect exact evidence and at least one relevant paper figure, challenge the emerging pattern against nearby prior work, and propose one falsifiable paper idea. Cite PaperTrail evidence IDs and public source URLs. State clearly that novelty is bounded by this corpus.",
   "duration_seconds": 150
