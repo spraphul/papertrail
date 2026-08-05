@@ -47,10 +47,10 @@ def _add_daily_setup_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--rolling-window-days", type=int, default=365)
     command.add_argument("--workers", type=int, default=3)
     command.add_argument(
-        "--embedding-provider", choices=("ollama", "openai", "aifactory"), default="ollama"
+        "--embedding-provider", choices=("ollama", "openai"), default="ollama"
     )
     command.add_argument(
-        "--reasoning-provider", choices=("ollama", "openai", "aifactory"), default="ollama"
+        "--reasoning-provider", choices=("ollama", "openai"), default="ollama"
     )
     command.add_argument("--embedding-model")
     command.add_argument("--reasoning-model")
@@ -63,18 +63,6 @@ def _add_daily_setup_arguments(command: argparse.ArgumentParser) -> None:
         "--openai-api-key-file",
         type=Path,
         help="path to a private API-key file for MCP, dashboard, or scheduled runs",
-    )
-    command.add_argument(
-        "--aifactory-base-url",
-        default=os.environ.get(
-            "AIFACTORY_BASE_URL",
-            "http://aifactory-healthai.digitalassistant.oci.oraclecloud.com:3000",
-        ),
-        help="AI Factory development endpoint",
-    )
-    command.add_argument(
-        "--aifactory-api-version",
-        default=os.environ.get("AIFACTORY_API_VERSION", "2024-10-21"),
     )
     command.add_argument("--client", choices=("codex", "claude"), action="append")
     command.add_argument(
@@ -587,14 +575,12 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
         raise ValueError("cluster-threshold must be between 0 and 1")
 
     embedding_model = arguments.embedding_model or (
-        "text-embedding-3-small" if arguments.embedding_provider == "openai" else
-        "oracle-text-embedding-3-small" if arguments.embedding_provider == "aifactory" else
-        "embeddinggemma"
+        "text-embedding-3-small"
+        if arguments.embedding_provider == "openai"
+        else "embeddinggemma"
     )
     reasoning_model = arguments.reasoning_model or (
-        "gpt-5.6" if arguments.reasoning_provider == "openai" else
-        "gpt-5.4-2026-03-05" if arguments.reasoning_provider == "aifactory" else
-        "qwen2.5:7b"
+        "gpt-5.6" if arguments.reasoning_provider == "openai" else "qwen2.5:7b"
     )
     uses_openai = "openai" in {
         arguments.embedding_provider,
@@ -617,19 +603,6 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
             "Scheduled OpenAI runs require --openai-api-key-file because launchd does not "
             "load shell environment variables; use --no-schedule for environment-only use"
         )
-    uses_aifactory = "aifactory" in {
-        arguments.embedding_provider,
-        arguments.reasoning_provider,
-    }
-    if uses_aifactory and not os.environ.get("AIFACTORY_BEARER_TOKEN"):
-        raise RuntimeError(
-            "AI Factory development runs require AIFACTORY_BEARER_TOKEN in the environment"
-        )
-    if uses_aifactory and not arguments.no_schedule:
-        raise RuntimeError(
-            "AI Factory bearer tokens are short-lived development credentials; use --no-schedule"
-        )
-
     learning_sources = _learning_sources(arguments, service)
     profile = {
         "profile": "local",
@@ -640,8 +613,6 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
             "reasoning_model": reasoning_model,
             "openai_base_url": arguments.openai_base_url.rstrip("/"),
             "openai_api_key_file": openai_key_file,
-            "aifactory_base_url": arguments.aifactory_base_url.rstrip("/"),
-            "aifactory_api_version": arguments.aifactory_api_version,
         },
         "daily": {
             "category": arguments.category,
@@ -729,9 +700,6 @@ def _setup_local(arguments: argparse.Namespace, service: PaperTrail) -> dict[str
             "embedding_model": embedding_model,
             "reasoning_model": reasoning_model,
             "openai_base_url": arguments.openai_base_url.rstrip("/") if uses_openai else None,
-            "aifactory_base_url": (
-                arguments.aifactory_base_url.rstrip("/") if uses_aifactory else None
-            ),
             "credential": "key-file" if openai_key_file else "environment",
         },
         "daily": profile["daily"],

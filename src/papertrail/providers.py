@@ -2,15 +2,10 @@ from __future__ import annotations
 
 import copy
 import json
-import os
-import ssl
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Protocol
-
-import certifi
 
 
 class IntelligenceProvider(Protocol):
@@ -273,166 +268,6 @@ class OpenAIProvider:
         return parsed
 
 
-class AIFactoryProvider:
-    """Oracle AI Factory adapter for local development.
-
-    AI Factory currently accepts one string per embedding request, so ``embed``
-    deliberately serializes a caller batch into scalar requests. Authentication is
-    environment-only and the transport bypasses workstation proxy settings.
-    """
-
-    DEFAULT_BASE_URL = (
-        "http://aifactory-healthai.digitalassistant.oci.oraclecloud.com:3000"
-    )
-    DEFAULT_API_VERSION = "2024-10-21"
-
-    def __init__(
-        self,
-        *,
-        bearer_token: str | None = None,
-        base_url: str = DEFAULT_BASE_URL,
-        api_version: str = DEFAULT_API_VERSION,
-        embedding_model: str = "oracle-text-embedding-3-small",
-        reasoning_model: str = "gpt-5.4-2026-03-05",
-        timeout: int = 180,
-    ):
-        self.provider_name = "aifactory"
-        self._bearer_token = bearer_token or os.environ.get("AIFACTORY_BEARER_TOKEN")
-        self.base_url = base_url.rstrip("/")
-        self.api_version = api_version
-        self.embedding_model = embedding_model
-        self.reasoning_model = reasoning_model
-        self.timeout = timeout
-        context = ssl.create_default_context(cafile=certifi.where())
-        self._opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({}),
-            urllib.request.HTTPSHandler(context=context),
-        )
-
-    def _request(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if not self._bearer_token:
-            raise RuntimeError(
-                "AI Factory development provider requires AIFACTORY_BEARER_TOKEN"
-            )
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=json.dumps(payload).encode(),
-            headers={
-                "Authorization": f"Bearer {self._bearer_token}",
-                "Content-Type": "application/json",
-                "User-Agent": "PaperTrailLocal/0.11",
-            },
-            method="POST",
-        )
-        value: Any = None
-        for attempt in range(3):
-            try:
-                with self._opener.open(request, timeout=self.timeout) as response:
-                    value = json.loads(response.read())
-                break
-            except urllib.error.HTTPError as error:
-                if error.code == 429 or error.code >= 500:
-                    if attempt < 2:
-                        time.sleep(2**attempt)
-                        continue
-                try:
-                    raw_detail = error.read().decode("utf-8", errors="replace")
-                    detail = json.loads(raw_detail).get("error", {}).get("message")
-                except (json.JSONDecodeError, AttributeError):
-                    detail = None
-                message = f"AI Factory returned HTTP {error.code}"
-                if detail:
-                    message += f": {self._redact(str(detail))}"
-                raise RuntimeError(message) from error
-            except (urllib.error.URLError, TimeoutError) as error:
-                if attempt < 2:
-                    time.sleep(2**attempt)
-                    continue
-                raise RuntimeError(f"AI Factory unavailable at {self.base_url}") from error
-            except json.JSONDecodeError as error:
-                raise RuntimeError("AI Factory returned invalid JSON") from error
-        if not isinstance(value, dict):
-            raise RuntimeError("AI Factory returned a non-object response")
-        return value
-
-    def _redact(self, value: str) -> str:
-        if self._bearer_token:
-            return value.replace(self._bearer_token, "[REDACTED]")
-        return value
-
-    def health(self) -> dict[str, Any]:
-        return {
-            "available": bool(self._bearer_token),
-            "provider": self.provider_name,
-            "url": self.base_url,
-            "embedding_model": self.embedding_model,
-            "reasoning_model": self.reasoning_model,
-            "message": None if self._bearer_token else "AIFACTORY_BEARER_TOKEN is not configured",
-        }
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        vectors: list[list[float]] = []
-        model = urllib.parse.quote(self.embedding_model, safe="")
-        version = urllib.parse.quote(self.api_version, safe="")
-        path = f"/openai/deployments/{model}/embeddings?api-version={version}"
-        for text in texts:
-            value = self._request(path, {"input": text})
-            items = value.get("data") or value.get("embeddings")
-            if not isinstance(items, list) or len(items) != 1:
-                raise RuntimeError("AI Factory embedding response did not contain one vector")
-            item = items[0]
-            vector = item.get("embedding") if isinstance(item, dict) else item
-            if not isinstance(vector, list) or not all(
-                isinstance(number, (int, float)) for number in vector
-            ):
-                raise RuntimeError("AI Factory embedding response contained an invalid vector")
-            vectors.append(vector)
-        return vectors
-
-    def structured(self, *, system: str, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
-        model = urllib.parse.quote(self.reasoning_model, safe="")
-        output_budget = 16384 if "groups" in schema.get("properties", {}) else 8192
-        # The documented GPT-5.x deployment route omits api-version.
-        path = f"/openai/deployments/{model}/chat/completions"
-        value = self._request(
-            path,
-            {
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "papertrail_result",
-                        "strict": True,
-                        "schema": _strict_schema(schema),
-                    },
-                },
-                "temperature": 1,
-                "stream": False,
-                "max_completion_tokens": output_budget,
-            },
-        )
-        try:
-            content = value["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as error:
-            raise RuntimeError("AI Factory reasoning response contained no message") from error
-        if not isinstance(content, str):
-            raise RuntimeError("AI Factory reasoning response contained no structured content")
-        try:
-            parsed = _parse_json_object(content)
-        except json.JSONDecodeError as error:
-            finish_reason = value.get("choices", [{}])[0].get("finish_reason")
-            suffix = f" (finish_reason={finish_reason})" if finish_reason else ""
-            raise RuntimeError(
-                f"AI Factory reasoning response contained invalid JSON{suffix}"
-            ) from error
-        if not isinstance(parsed, dict):
-            raise RuntimeError("AI Factory reasoning response contained a non-object result")
-        return parsed
-
-
 def _strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Return an OpenAI strict-schema copy without mutating shared schemas."""
     normalized = copy.deepcopy(schema)
@@ -498,17 +333,7 @@ def _provider(settings: Any, name: str) -> IntelligenceProvider:
             embedding_model=settings.embedding_model,
             reasoning_model=settings.reasoning_model,
         )
-    if name == "aifactory":
-        return AIFactoryProvider(
-            bearer_token=settings.aifactory_bearer_token,
-            base_url=settings.aifactory_base_url,
-            api_version=settings.aifactory_api_version,
-            embedding_model=settings.embedding_model,
-            reasoning_model=settings.reasoning_model,
-        )
-    raise ValueError(
-        f"Unknown PaperTrail provider {name!r}; use 'ollama', 'openai', or 'aifactory'"
-    )
+    raise ValueError(f"Unknown PaperTrail provider {name!r}; use 'ollama' or 'openai'")
 
 
 def provider_from_settings(settings: Any) -> IntelligenceProvider:

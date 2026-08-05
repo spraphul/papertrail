@@ -291,8 +291,8 @@ copied into PaperTrail's profile or database.
 
 Useful controls include `--daily-at 06:00`, `--lookback-days 3`,
 `--rolling-window-days 365`, `--analyst codex|claude`, `--daily-blogs 1|2|3`, repeated
-`--client codex|claude`, `--embedding-provider ollama|openai|aifactory`,
-`--reasoning-provider ollama|openai|aifactory`, model IDs, `--dashboard-port 8765`, and
+`--client codex|claude`, `--embedding-provider ollama|openai`,
+`--reasoning-provider ollama|openai`, model IDs, `--dashboard-port 8765`, and
 `--daily-enrichment-budget 40`, `--interests`, `--interests-file`,
 `--no-personalized-ingestion`, and `--no-schedule`.
 Set the enrichment budget to `0` to fully acquire every discovered daily paper.
@@ -435,28 +435,8 @@ make test
 ./script/build_and_run.sh --verify
 ```
 
-Oracle developers can optionally exercise the same provider boundary through AI Factory.
-The bearer token stays in the process environment and is never written to the profile or
-database. AI Factory's embedding route currently accepts scalar input, so PaperTrail sends
-one text per request even when its internal caller supplies a batch.
-
-```bash
-source ~/.zshrc
-aifactory-token
-export AIFACTORY_BEARER_TOKEN="$BEARER_TOKEN"
-unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
-export NO_PROXY=aifactory-healthai.digitalassistant.oci.oraclecloud.com
-
-papertrail --home "$HOME/.papertrail-dev" setup \
-  --embedding-provider aifactory \
-  --embedding-model oracle-text-embedding-3-small \
-  --reasoning-provider aifactory \
-  --reasoning-model gpt-5.4-2026-03-05 \
-  --no-schedule
-```
-
-This adapter is intended only for authenticated local development. Ollama and bring-your-own
-OpenAI credentials remain the portable public deployment options.
+Development and production use the same provider boundary: fully local Ollama or a
+bring-your-own OpenAI-compatible endpoint and model IDs.
 
 The implementation is one ordinary Python package with no required runtime
 dependencies. Detailed component and trust boundaries are in
