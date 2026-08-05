@@ -66,7 +66,7 @@ def assemble(scenes_path: Path, raw: Path, narration: Path, captions: Path, outp
             "-i", str(narration), "-f", "lavfi", "-i",
             "anoisesrc=color=pink:duration=150:amplitude=0.02", "-filter_complex",
             f"[0:v]scale=1920:1080,fps=30,subtitles={captions}:"
-            "force_style='FontName=Arial,FontSize=18,MarginV=48,Outline=1',"
+            "force_style='FontName=Arial,FontSize=10,MarginV=26,Outline=0.7',"
             "format=yuv420p[v];[1:a]highpass=f=70,loudnorm=I=-16:LRA=7:TP=-1.5[voice];"
             f"[2:a]highpass=f=120,lowpass=f=900,volume='{transitions}*0.035'[bed];"
             "[voice][bed]amix=inputs=2:duration=first:normalize=0[a]",
