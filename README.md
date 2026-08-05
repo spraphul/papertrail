@@ -37,9 +37,6 @@ The dashboard is included with the package and listens on localhost only.
 
 ![Compact expandable favourites](docs/images/dashboard-favourites.png)
 
-### Read the indexed PDF locally
-
-![PaperTrail local PDF reader](docs/images/dashboard-paper-reader.png)
 
 The deep-dive view links to the canonical public source and opens the indexed PDF in an
 embedded reader. Generated articles can include verified figures from the paper.
