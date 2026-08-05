@@ -22,3 +22,6 @@ research/
 
 # Isolated feature worktrees.
 .worktrees/
+.superpowers/
+.demo-work/
+docs/demo/raw/

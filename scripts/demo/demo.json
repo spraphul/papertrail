@@ -1,0 +1,17 @@
+{
+  "counts": {
+    "papers": 40,
+    "evidence": 2701,
+    "figures": 302,
+    "groups": 25,
+    "blogs": 3
+  },
+  "dashboard_url": "http://127.0.0.1:8899",
+  "routes": {
+    "group": "organization_cb023aa5b719d8f57783",
+    "paper": "replace-after-preparation",
+    "blog": "replace-after-preparation"
+  },
+  "codex_prompt": "Use $papertrail-deep-research to investigate whether agent memory can detect and adapt to changing tool interfaces. Search broadly across the local corpus, inspect exact evidence and at least one relevant paper figure, challenge the emerging pattern against nearby prior work, and propose one falsifiable paper idea. Cite PaperTrail evidence IDs and public source URLs. State clearly that novelty is bounded by this corpus.",
+  "duration_seconds": 150
+}
