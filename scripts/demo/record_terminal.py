@@ -6,8 +6,6 @@ import json
 import subprocess
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
-
 
 def _run(command: list[str], root: Path, log: Path) -> str:
     result = subprocess.run(command, cwd=root, text=True, capture_output=True, check=True)
@@ -39,6 +37,8 @@ def _editorial_html(eyebrow: str, headline: str, detail: str) -> str:
 
 
 def record_html_scene(page_path: Path, output: Path, name: str, duration_ms: int) -> None:
+    from playwright.sync_api import sync_playwright
+
     output.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)

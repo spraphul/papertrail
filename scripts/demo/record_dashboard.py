@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import quote
 
-from playwright.sync_api import Page, sync_playwright
-
 from scripts.demo.model import DemoManifest
+
+if TYPE_CHECKING:
+    from playwright.sync_api import Page
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,8 @@ def _ready(page: Page, selector: str) -> None:
 
 
 def record(manifest: DemoManifest, output: Path) -> None:
+    from playwright.sync_api import sync_playwright
+
     output.mkdir(parents=True, exist_ok=True)
     console_errors: list[str] = []
     with sync_playwright() as playwright:

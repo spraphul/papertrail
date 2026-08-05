@@ -10,7 +10,6 @@ import urllib.request
 from pathlib import Path
 
 import certifi
-from playwright.sync_api import sync_playwright
 
 from scripts.demo.model import DemoManifest, run_checked
 
@@ -100,6 +99,8 @@ def _request(url: str, *, method: str = "GET", headers: dict[str, str] | None = 
 
 
 def validate_live_routes(manifest: DemoManifest, transcript: str) -> None:
+    from playwright.sync_api import sync_playwright
+
     root = manifest.dashboard_url
     health = json.loads(_request(f"{root}/health"))
     if health.get("status") != "ok":
