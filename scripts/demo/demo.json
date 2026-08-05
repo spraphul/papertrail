@@ -12,6 +12,6 @@
     "paper": "paper_0cbbe07161fe284731f4",
     "blog": "2026-08-04-thinking-can-repair-a-typo-but-not-a-rewritten-question"
   },
-  "codex_prompt": "Use $papertrail-deep-research to investigate whether agent memory can detect and adapt to changing tool interfaces. Search broadly across the local corpus, inspect exact evidence and at least one relevant paper figure, challenge the emerging pattern against nearby prior work, and propose one falsifiable paper idea. Cite PaperTrail evidence IDs and public source URLs. State clearly that novelty is bounded by this corpus.",
+  "codex_prompt": "Use $papertrail-deep-research to investigate whether agent memory can detect and adapt to changing tool interfaces. Use only the configured PaperTrail MCP tools for corpus research; do not inspect the filesystem or database directly. Search broadly across the local corpus, inspect exact evidence and at least one relevant paper figure, challenge the emerging pattern against nearby prior work, and propose one falsifiable paper idea. Cite PaperTrail evidence IDs and public source URLs. State clearly that novelty is bounded by this corpus.",
   "duration_seconds": 150
 }
