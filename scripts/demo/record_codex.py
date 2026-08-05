@@ -13,6 +13,7 @@ from scripts.demo.record_terminal import _terminal_html, record_html_scene
 
 EVIDENCE = re.compile(r"\bev_[A-Za-z0-9_-]+\b")
 SECRET = re.compile(r"\b(?:sk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9._-]{12,})\b")
+INTERNAL_PAPER = re.compile(r",?\s*`paper_[A-Za-z0-9_-]+`")
 
 
 def extract_evidence_ids(text: str) -> set[str]:
@@ -22,7 +23,7 @@ def extract_evidence_ids(text: str) -> set[str]:
 def redact_transcript(text: str, replacements: dict[str, str]) -> str:
     for private, public in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
         text = text.replace(private, public)
-    return SECRET.sub("[REDACTED]", text)
+    return INTERNAL_PAPER.sub("", SECRET.sub("[REDACTED]", text))
 
 
 def validate_audit(events: str) -> None:
@@ -123,8 +124,16 @@ def capture(
     if not extract_evidence_ids(clean):
         raise RuntimeError("Codex answer contains no PaperTrail evidence IDs")
     output.write_text(clean)
-    page = output.with_suffix(".html")
-    markup = _terminal_html(["$ codex", manifest.codex_prompt, "", clean]).replace(
+    render_answer(manifest, clean, output.with_suffix(".html"), scene_output)
+
+
+def render_answer(
+    manifest: DemoManifest,
+    answer: str,
+    page: Path,
+    scene_output: Path,
+) -> None:
+    markup = _terminal_html(["$ codex", manifest.codex_prompt, "", answer]).replace(
         "</style>",
         "pre{animation:research-scroll 29s linear 2s forwards}"
         "@keyframes research-scroll{to{transform:translateY(-58%)}}</style>",
@@ -140,9 +149,16 @@ def main() -> None:
     parser.add_argument("--work", type=Path, default=Path(".demo-work/codex-project"))
     parser.add_argument("--output", type=Path, default=Path(".demo-work/codex-answer.md"))
     parser.add_argument("--scene-output", type=Path, default=Path(".demo-work/scenes"))
+    parser.add_argument("--render-existing", action="store_true")
     args = parser.parse_args()
+    manifest = DemoManifest.load(args.manifest)
+    if args.render_existing:
+        clean = redact_transcript(args.output.read_text(), {})
+        args.output.write_text(clean)
+        render_answer(manifest, clean, args.output.with_suffix(".html"), args.scene_output)
+        return
     capture(
-        DemoManifest.load(args.manifest),
+        manifest,
         args.home.resolve(),
         args.work.resolve(),
         args.output,

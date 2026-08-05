@@ -6,11 +6,15 @@ from scripts.demo.record_codex import extract_evidence_ids, redact_transcript, v
 
 
 def test_codex_transcript_keeps_evidence_and_removes_private_paths() -> None:
-    raw = "Found ev_abc123 in /Users/private/.papertrail using token sk-secretvalue"
+    raw = (
+        "Found ev_abc123, `paper_deadbeef` in /Users/private/.papertrail "
+        "using token sk-secretvalue"
+    )
     clean = redact_transcript(raw, replacements={"/Users/private": "<demo-home>"})
     assert extract_evidence_ids(clean) == {"ev_abc123"}
     assert "/Users/private" not in clean
     assert "sk-secretvalue" not in clean
+    assert "paper_deadbeef" not in clean
 
 
 def test_codex_transcript_requires_evidence() -> None:
