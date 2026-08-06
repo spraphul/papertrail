@@ -10,14 +10,6 @@ and propose falsifiable research directions—not merely summarize PDFs.
 It runs as one lightweight Python package with SQLite and local files. Use Ollama to keep model calls
 on your machine, or bring OpenAI reasoning and embedding models with your own API key.
 
-## Watch the 2½-minute walkthrough
-
-[![PaperTrail walkthrough: onboarding, personalized daily intelligence, exact evidence, figures, and Codex deep research](docs/demo/papertrail-demo-preview.webp)](docs/demo/papertrail-demo.mp4)
-
-Click the preview to watch the full 1080p demo—from first-time setup and the daily
-paper funnel through research neighborhoods, local PDF reading, favourites, and a real
-Codex investigation over PaperTrail's read-only MCP tools. Prefer text? Read the
-[accessible transcript](docs/demo/transcript.md).
 
 ## See it in action
 
